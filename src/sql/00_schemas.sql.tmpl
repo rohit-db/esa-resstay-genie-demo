@@ -1,0 +1,5 @@
+CREATE SCHEMA IF NOT EXISTS `{{catalog}}`.`{{mart}}` COMMENT 'ESA gold star schema: synthetic replica of dev_gold.mart for the ResStay Genie demo';
+CREATE SCHEMA IF NOT EXISTS `{{catalog}}`.`{{common}}` COMMENT 'Shared conformed dimensions (dim_date)';
+CREATE SCHEMA IF NOT EXISTS `{{catalog}}`.`{{staging}}` COMMENT 'Synthetic generator output; the only source for the mart loads';
+CREATE SCHEMA IF NOT EXISTS `{{catalog}}`.`{{semantic}}` COMMENT 'Metric views for ResStay, occupancy, and booking KPIs';
+CREATE SCHEMA IF NOT EXISTS `{{catalog}}`.`{{security}}` COMMENT 'Entitlements and row-filter functions; never granted to readers';

@@ -1,0 +1,290 @@
+# ESA ResStay Revenue Genie agent. Rendered by tools/render.py into build/genie/resstay_revenue.geniespace.json
+# and deployed by resources/genie_spaces.yml. Every example and benchmark SQL is executed by tools/validate.py.
+key: resstay_revenue
+metric_views:
+  - semantic.resstay_metrics
+  - semantic.booking_metrics
+tables:
+  - mart.vw_dim_property
+  - mart.dim_crm_account
+match:
+  semantic.resstay_metrics: [Brand, Comp Status, Division, Region, District, DVP, RVP/RDO, District Manager,
+                             General Manager, Market, Tiger Site, Property, Channel, Rate Segment, Room Class, LOS Tier,
+                             Promotion, Account, Account Tier]
+  semantic.booking_metrics: [Brand, District, District Manager, Market, Property, Channel, Rate Segment, Promotion,
+                             Account, Account Tier, Account Industry, Booked LOS Tier]
+  mart.vw_dim_property: [property_name, property_code, brand_cd, comp_status, market_name, district_name, region_name,
+                         division_name, dvp_name, rvp_rdo_name, dm_name, gm_name]
+  mart.dim_crm_account: [account_name, account_tier, industry_name, parent_account_name]
+hide:
+  mart.dim_crm_account: [account_owner_name, account_owner_email]
+instructions: |
+  ## PURPOSE
+  - Answer ESA ResStay revenue questions for operating leaders (DVP, RVP/RDO, DM, GM) and revenue management.
+  - Use resstay_metrics for stay results and booking_metrics for reservations, cancellations, and on-the-books nights.
+
+  ## DISAMBIGUATION
+  - MTD, QTD, YTD, last week, and last N days end on the Latest Stay Date measure (the last night audit), not today.
+  - "vs last year" or "YoY" means the same calendar window one year earlier.
+  - "Revenue" means Room Revenue unless the user says net revenue or total revenue.
+  - "OTB 4 Tier" or "length of stay tier" means LOS Tier: 0-6, 7-14, 15-29, and 30+ nights.
+  - "Comp hotels" or "like for like" means Comp Status = Comp.
+
+  ## DATA QUALITY NOTES
+  - Hotels report under their current brand and current leadership; history rows are already excluded.
+
+  ## CONSTRAINTS
+  - Never show account owner names or emails.
+
+  ## Instructions you must follow when providing summaries
+  - In SQL, return rates, shares, and growth as fractions (0.052, not 5.2); show them as percentages only in the written answer.
+  - State the date window used and the latest loaded date.
+  - Show revenue in whole dollars, ADR in dollars and cents, and percentages with one decimal.
+sample_questions:
+  - What is month-to-date room revenue vs last year by brand?
+  - Which district managers grew room revenue the most vs last year this month?
+  - How did 7-14 night stays change year over year?
+  - Which channels are declining year over year?
+  - Who are the top corporate accounts by room nights in the last 90 days?
+examples:
+  - question: What is month-to-date room revenue and ADR vs last year by brand?
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      ),
+      cur AS (
+        SELECT `Brand`, MEASURE(`Room Revenue`) AS room_revenue, MEASURE(`ADR`) AS adr
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `Brand`, MEASURE(`Room Revenue`) AS room_revenue, MEASURE(`ADR`) AS adr
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`Brand`, cur.room_revenue AS room_revenue_mtd, prior.room_revenue AS room_revenue_ly,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS room_revenue_yoy,
+             cur.adr AS adr_mtd, prior.adr AS adr_ly
+      FROM cur LEFT JOIN prior ON cur.`Brand` = prior.`Brand`
+      ORDER BY room_revenue_mtd DESC
+  - question: Rank district managers by room revenue growth vs last year this month
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      ),
+      cur AS (
+        SELECT `District`, `District Manager`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `District`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`District Manager`, cur.`District`, cur.room_revenue AS room_revenue_mtd,
+             prior.room_revenue AS room_revenue_ly, cur.room_revenue - prior.room_revenue AS variance,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS yoy
+      FROM cur JOIN prior ON cur.`District` = prior.`District`
+      ORDER BY yoy DESC
+  - question: How did room nights and room revenue change year over year by length-of-stay tier over the last 90 days?
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      ),
+      cur AS (
+        SELECT `LOS Tier`, MEASURE(`Room Nights`) AS room_nights, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT date_sub(d, 89) FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `LOS Tier`, MEASURE(`Room Nights`) AS room_nights, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT add_months(date_sub(d, 89), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`LOS Tier`, cur.room_nights, prior.room_nights AS room_nights_ly,
+             try_divide(cur.room_nights - prior.room_nights, prior.room_nights) AS room_nights_yoy,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS room_revenue_yoy
+      FROM cur LEFT JOIN prior ON cur.`LOS Tier` = prior.`LOS Tier`
+      ORDER BY CASE cur.`LOS Tier` WHEN '0-6' THEN 1 WHEN '7-14' THEN 2 WHEN '15-29' THEN 3 ELSE 4 END
+  - question: Which booking channels grew or declined in room revenue vs last year over the last 90 days?
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      ),
+      cur AS (
+        SELECT `Channel`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT date_sub(d, 89) FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `Channel`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT add_months(date_sub(d, 89), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`Channel`, cur.room_revenue AS room_revenue, prior.room_revenue AS room_revenue_ly,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS yoy
+      FROM cur LEFT JOIN prior ON cur.`Channel` = prior.`Channel`
+      ORDER BY yoy
+  - question: Top 10 corporate accounts by room nights in the last 90 days
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      )
+      SELECT `Account`, `Account Tier`, MEASURE(`Room Nights`) AS room_nights,
+             MEASURE(`Room Revenue`) AS room_revenue, MEASURE(`ADR`) AS adr
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Account` IS NOT NULL
+        AND `Stay Date` BETWEEN (SELECT date_sub(d, 89) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY room_nights DESC
+      LIMIT 10
+  - question: Monthly ADR, room nights, and room revenue for the last 12 months
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      )
+      SELECT `Stay Month`, MEASURE(`ADR`) AS adr, MEASURE(`Room Nights`) AS room_nights,
+             MEASURE(`Room Revenue`) AS room_revenue
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -11) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY `Stay Month`
+  - question: Cancellation rate by channel for reservations booked in the last 30 days
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Booked Date`) AS d FROM {{catalog}}.{{semantic}}.booking_metrics
+      )
+      SELECT `Channel`, MEASURE(`Reservations`) AS reservations, MEASURE(`Cancelled Reservations`) AS cancelled,
+             MEASURE(`Cancellation Rate`) AS cancellation_rate
+      FROM {{catalog}}.{{semantic}}.booking_metrics
+      WHERE `Booked Date` BETWEEN (SELECT date_sub(d, 29) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY cancellation_rate DESC
+  - question: Year-to-date room revenue vs last year for comp hotels by division
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics
+      ),
+      cur AS (
+        SELECT `Division`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Comp Status` = 'Comp'
+          AND `Stay Date` BETWEEN (SELECT trunc(d, 'YEAR') FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `Division`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Comp Status` = 'Comp'
+          AND `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'YEAR'), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`Division`, cur.room_revenue AS room_revenue_ytd, prior.room_revenue AS room_revenue_ly,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS yoy
+      FROM cur LEFT JOIN prior ON cur.`Division` = prior.`Division`
+      ORDER BY cur.`Division`
+benchmarks:
+  - question: What was total room revenue last month?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT MEASURE(`Room Revenue`) AS room_revenue
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                            AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+  - question: What is ADR for ESAP hotels month to date?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT MEASURE(`ADR`) AS adr
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Brand` = 'ESAP' AND `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+  - question: How many room nights were consumed on the latest night audit date?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT MEASURE(`Room Nights`) AS room_nights
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` = (SELECT d FROM latest)
+  - question: Net room revenue by brand for the last 7 days
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT `Brand`, MEASURE(`Net Room Revenue`) AS net_room_revenue
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` BETWEEN (SELECT date_sub(d, 6) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY net_room_revenue DESC
+  - question: Which market had the highest room revenue month to date?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT `Market`, MEASURE(`Room Revenue`) AS room_revenue
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY room_revenue DESC
+      LIMIT 1
+  - question: What share of room revenue came from 30+ night stays month to date?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics),
+      tiers AS (
+        SELECT `LOS Tier`, MEASURE(`Room Revenue`) AS room_revenue
+        FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      )
+      SELECT SUM(CASE WHEN `LOS Tier` = '30+' THEN room_revenue END) / SUM(room_revenue) AS share_30_plus
+      FROM tiers
+  - question: Room revenue by rate segment last month
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT `Rate Segment`, MEASURE(`Room Revenue`) AS room_revenue
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                            AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+      GROUP BY ALL
+      ORDER BY room_revenue DESC
+  - question: Which 10 Tiger Sites have the lowest ADR month to date?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics)
+      SELECT `Property`, MEASURE(`ADR`) AS adr
+      FROM {{catalog}}.{{semantic}}.resstay_metrics
+      WHERE `Tiger Site` = 'Tiger Site'
+        AND `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY adr
+      LIMIT 10
+  - question: What was the cancellation rate for OTA - Expedia reservations booked last month?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Booked Date`) AS d FROM {{catalog}}.{{semantic}}.booking_metrics)
+      SELECT MEASURE(`Cancellation Rate`) AS cancellation_rate
+      FROM {{catalog}}.{{semantic}}.booking_metrics
+      WHERE `Channel` = 'OTA - Expedia'
+        AND `Booked Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                              AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+  - question: Year-to-date room revenue for comp hotels compared with the same period last year
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics),
+      cur AS (
+        SELECT MEASURE(`Room Revenue`) AS room_revenue FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Comp Status` = 'Comp' AND `Stay Date` BETWEEN (SELECT trunc(d, 'YEAR') FROM latest) AND (SELECT d FROM latest)
+      ),
+      prior AS (
+        SELECT MEASURE(`Room Revenue`) AS room_revenue FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Comp Status` = 'Comp'
+          AND `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'YEAR'), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+      )
+      SELECT cur.room_revenue AS room_revenue_ytd, prior.room_revenue AS room_revenue_ly,
+             try_divide(cur.room_revenue - prior.room_revenue, prior.room_revenue) AS yoy
+      FROM cur CROSS JOIN prior

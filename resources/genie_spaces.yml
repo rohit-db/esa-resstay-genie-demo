@@ -1,0 +1,20 @@
+# The two ESA Genie agents. tools/render.py writes the serialized spaces from genie/*.yml.
+resources:
+  genie_spaces:
+    resstay_revenue:
+      title: ESA ResStay Revenue
+      description: >-
+        Answers ESA ResStay revenue questions: Room Revenue, Net Room Revenue, Room Nights, ADR, and Stays by period
+        against last year, brand, comp status, DVP, RVP/RDO, district manager, market, Tiger Site, channel, rate
+        segment, length-of-stay tier, promotion, and corporate account, plus reservations, cancellations, and
+        on-the-books nights. Built on the certified resstay_metrics and booking_metrics metric views.
+      warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+      file_path: ../build/genie/resstay_revenue.geniespace.json
+    property_operations:
+      title: ESA Property Operations
+      description: >-
+        Answers ESA property operations questions: occupancy, available, paid, comp, and out-of-order rooms, RevPAR,
+        renovations, Tiger Sites, and comp status by date, week, month, brand, market, and the operating hierarchy
+        (division, region, district; DVP, RVP/RDO, DM, GM). Built on the certified occupancy_metrics metric view.
+      warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+      file_path: ../build/genie/property_operations.geniespace.json

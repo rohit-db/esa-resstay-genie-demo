@@ -1,0 +1,701 @@
+-- Certified metric views in {{catalog}}.{{semantic}}. One fact source per metric view; dimension joins
+-- keep only current rows. Rendered by tools/render.py and run by the setup job's metric_views task.
+
+CREATE OR REPLACE VIEW `{{catalog}}`.`{{semantic}}`.`property_day_revenue`
+COMMENT 'Helper for occupancy_metrics: room revenue and consumed room nights per property per stay day, summed from the current stay ledger lines. bk_date_id is an INT (yyyymmdd) so it joins fact_property_statistics directly.'
+AS SELECT
+  bk_property_id,
+  CAST(bk_date_id AS INT) AS bk_date_id,
+  SUM(room_revenue_amount) AS room_revenue_amount,
+  SUM(consumed_room_nights_count) AS room_nights
+FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`
+WHERE is_current
+GROUP BY bk_property_id, CAST(bk_date_id AS INT);
+
+CREATE OR REPLACE VIEW `{{catalog}}`.`{{semantic}}`.`resstay_metrics`
+WITH METRICS
+LANGUAGE YAML
+AS $$
+version: 1.1
+comment: "Certified ResStay revenue metrics from the stay ledger fact_actual_stay (one line per occupied room night, plus credit adjustment lines with zero nights). Room Revenue, Net Room Revenue, Total Room Revenue, Room Nights, ADR, and Stays by stay date, property, org hierarchy, brand, comp status, channel, rate segment, room class, length-of-stay tier, promotion, and account. Source for the ResStay Dashboard and the ESA ResStay Revenue agent."
+source: {{catalog}}.{{mart}}.fact_actual_stay
+filter: source.is_current = true
+joins:
+  - name: dim_prop
+    source: {{catalog}}.{{mart}}.vw_dim_property
+    'on': source.bk_property_id = dim_prop.bk_property_id
+  - name: dim_cal
+    source: {{catalog}}.{{common}}.dim_date
+    'on': CAST(source.bk_date_id AS INT) = dim_cal.BK_Date_Dim_Id
+  - name: dim_rate
+    source: {{catalog}}.{{mart}}.dim_rate_segment
+    'on': source.bk_rate_segment_id = dim_rate.bk_rate_segment_id AND dim_rate.is_current = true
+  - name: dim_room
+    source: {{catalog}}.{{mart}}.dim_room_type
+    'on': source.bk_room_type_id = dim_room.bk_room_type_id AND dim_room.is_current = true
+  - name: dim_res
+    source: {{catalog}}.{{mart}}.fact_reservation_summary
+    'on': source.bk_reservation_id = dim_res.bk_reservation_id AND dim_res.is_current = true
+    joins:
+      - name: dim_chan
+        source: {{catalog}}.{{mart}}.dim_channel
+        'on': dim_res.bk_channel_id = dim_chan.bk_channel_id AND dim_chan.is_current = true
+      - name: dim_los
+        source: {{catalog}}.{{mart}}.dim_los
+        'on': dim_res.bk_actual_los_id = dim_los.bk_los_id AND dim_los.is_current = true
+      - name: dim_promo
+        source: {{catalog}}.{{mart}}.dim_promotion
+        'on': dim_res.bk_promo_cd = dim_promo.bk_promo_cd AND dim_promo.is_current = true
+      - name: dim_acct
+        source: {{catalog}}.{{mart}}.dim_crm_account
+        'on': dim_res.bk_crm_account_id = dim_acct.bk_crm_account_id AND dim_acct.is_current = true
+dimensions:
+  - name: Stay Date
+    expr: dim_cal.Date_Dt
+    display_name: Stay Date
+    comment: "Calendar date of the stay night (night audit date)."
+    synonyms: [date, night, business date, audit date]
+  - name: Stay Week
+    expr: dim_cal.Week_Start_Dt
+    display_name: Stay Week
+    comment: "First day of the stay date's week, from dim_date.Week_Start_Dt."
+    synonyms: [week]
+  - name: Stay Month
+    expr: dim_cal.Month_Start_Dt
+    display_name: Stay Month
+    comment: "First day of the stay date's month."
+    synonyms: [month]
+  - name: Stay Year
+    expr: dim_cal.Yr_Nbr
+    display_name: Stay Year
+    comment: "Calendar year of the stay date."
+    synonyms: [year]
+  - name: Brand
+    expr: dim_prop.brand_cd
+    display_name: Brand
+    comment: "Hotel brand code: ESAS (Extended Stay America Suites), ESSS (Extended Stay America Select Suites), ESAP (Extended Stay America Premier Suites). Uses the hotel's current brand."
+    synonyms: [brand code, ESAS, ESSS, ESAP]
+  - name: Brand Name
+    expr: dim_prop.brand_name
+    display_name: Brand Name
+    comment: "Full brand name of the hotel's current brand."
+  - name: Comp Status
+    expr: dim_prop.comp_status
+    display_name: Comp Status
+    comment: "Comp or Non-Comp. Non-Comp hotels were acquired recently or are under a full renovation and are excluded from like-for-like year-over-year comparisons."
+    synonyms: [comparable status, same store, like for like]
+  - name: Division
+    expr: dim_prop.division_name
+    display_name: Division
+    comment: "Operations hierarchy level 1, led by a DVP."
+  - name: Region
+    expr: dim_prop.region_name
+    display_name: Region
+    comment: "Operations hierarchy level 2, led by an RVP or RDO."
+  - name: District
+    expr: dim_prop.district_name
+    display_name: District
+    comment: "Operations hierarchy level 3, led by a District Manager (about ten hotels)."
+  - name: DVP
+    expr: dim_prop.dvp_name
+    display_name: DVP
+    comment: "Divisional Vice President responsible for the hotel's division."
+    synonyms: [divisional vice president]
+  - name: RVP/RDO
+    expr: dim_prop.rvp_rdo_name
+    display_name: RVP/RDO
+    comment: "Regional Vice President or Regional Director of Operations responsible for the hotel's region."
+    synonyms: [RVP, RDO, regional vice president, regional director]
+  - name: District Manager
+    expr: dim_prop.dm_name
+    display_name: District Manager
+    comment: "District Manager (DM) responsible for the hotel's district."
+    synonyms: [DM]
+  - name: General Manager
+    expr: dim_prop.gm_name
+    display_name: General Manager
+    comment: "General Manager (GM) of the hotel."
+    synonyms: [GM]
+  - name: Market
+    expr: dim_prop.market_name
+    display_name: Market
+    comment: "Market (metro area) the hotel belongs to."
+    synonyms: [metro, city]
+  - name: Tiger Site
+    expr: "CASE WHEN dim_prop.tiger_site_flag THEN 'Tiger Site' ELSE 'Not Tiger Site' END"
+    display_name: Tiger Site
+    comment: "Whether the hotel is in the Tiger Site focused performance program."
+    synonyms: [tiger, tiger program]
+  - name: Property
+    expr: dim_prop.property_name
+    display_name: Property
+    comment: "Hotel name."
+    synonyms: [hotel, property name, site]
+  - name: Property Code
+    expr: dim_prop.property_code
+    display_name: Property Code
+    comment: "Hotel code."
+    synonyms: [hotel code, site number]
+  - name: Channel
+    expr: dim_res.dim_chan.channel_name
+    display_name: Channel
+    comment: "Booking channel of the reservation, for example Brand Web, Mobile App, Call Center, OTA - Expedia, OTA - Booking.com, GDS, Corporate Sales, Walk-In."
+    synonyms: [booking channel, source of business]
+  - name: Channel Network
+    expr: dim_res.dim_chan.channel_network
+    display_name: Channel Network
+    comment: "Direct or Indirect booking network."
+    synonyms: [direct vs indirect]
+  - name: Rate Segment
+    expr: dim_rate.rate_segment_name
+    display_name: Rate Segment
+    comment: "Rate segment of the stay night, for example Best Available Rate, Weekly Rate, Monthly Rate, Corporate Negotiated, Government, Complimentary."
+    synonyms: [rate plan, segment]
+  - name: Rate Category
+    expr: dim_rate.rate_category
+    display_name: Rate Category
+    comment: "Rate category grouping rate segments, for example Transient, Extended Stay, Corporate, Government, Discount, Wholesale, Contract, Complimentary."
+  - name: Room Class
+    expr: dim_room.room_class
+    display_name: Room Class
+    comment: "Room class: Standard, Deluxe, or Suite."
+    synonyms: [room type class]
+  - name: LOS Tier
+    expr: dim_res.dim_los.los_band_1
+    display_name: LOS Tier (OTB 4 Tier)
+    comment: "Length-of-stay tier of the reservation's actual length of stay: 0-6, 7-14, 15-29, or 30+ nights (the OTB 4 Tier)."
+    synonyms: [OTB 4 Tier, length of stay tier, LOS band, stay length]
+  - name: Promotion
+    expr: dim_res.dim_promo.promotion_name
+    display_name: Promotion
+    comment: "Promotion on the reservation, for example Stay 7+ and Save, Monthly Saver, No Promotion."
+    synonyms: [promo, offer, campaign]
+  - name: Account
+    expr: dim_res.dim_acct.account_name
+    display_name: Account
+    comment: "CRM account (company) the reservation is booked under; empty for non-account business."
+    synonyms: [company, corporate account, CRM account]
+  - name: Account Tier
+    expr: dim_res.dim_acct.account_tier
+    display_name: Account Tier
+    comment: "CRM account tier: Platinum, Gold, Silver, Bronze."
+measures:
+  - name: Room Revenue
+    expr: SUM(source.room_revenue_amount)
+    display_name: Room Revenue
+    comment: "Gross room revenue in USD from stay nights."
+    synonyms: [revenue, rooms revenue, gross room revenue]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Credit Revenue
+    expr: SUM(source.credit_revenue_amount)
+    display_name: Credit Revenue
+    comment: "Room credits and adjustments in USD, positive amounts that reduce room revenue."
+    synonyms: [credits, room credits, adjustments]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Net Room Revenue
+    expr: SUM(source.net_room_revenue)
+    display_name: Net Room Revenue
+    comment: "Room revenue minus credit revenue, in USD."
+    synonyms: [net revenue, net rooms revenue]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Other Rooms Revenue
+    expr: SUM(source.other_rooms_revenue)
+    display_name: Other Rooms Revenue
+    comment: "Other rooms-related revenue in USD, such as pet fees and early check-in fees."
+    synonyms: [pet fees, ancillary rooms revenue]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Total Room Revenue
+    expr: SUM(source.total_room_revenue)
+    display_name: Total Room Revenue
+    comment: "Room revenue plus other rooms revenue, in USD."
+    synonyms: [total revenue]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Room Nights
+    expr: SUM(source.consumed_room_nights_count)
+    display_name: Room Nights
+    comment: "Consumed (occupied) room nights; credit lines carry zero nights."
+    synonyms: [nights, room nights sold, occupied nights, RN]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: ADR
+    expr: "try_divide(MEASURE(`Room Revenue`), MEASURE(`Room Nights`))"
+    display_name: ADR
+    comment: "Average Daily Rate in USD: room revenue divided by consumed room nights."
+    synonyms: [average daily rate, average rate, rate]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 2}
+  - name: Stays
+    expr: COUNT(DISTINCT source.bk_reservation_id) FILTER (WHERE source.consumed_room_nights_count > 0)
+    display_name: Stays
+    comment: "Number of distinct reservations with at least one consumed room night in the selection."
+    synonyms: [stay count, guests stays]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Latest Stay Date
+    expr: "MAX(TO_DATE(source.bk_date_id, 'yyyyMMdd'))"
+    display_name: Latest Stay Date
+    comment: "Latest stay date loaded (the last night audit). MTD, QTD, YTD, and last-N-days periods end on this date."
+    synonyms: [last audit date, latest date, data through]
+$$;
+
+CREATE OR REPLACE VIEW `{{catalog}}`.`{{semantic}}`.`occupancy_metrics`
+WITH METRICS
+LANGUAGE YAML
+AS $$
+version: 1.1
+comment: "Certified occupancy metrics from fact_property_statistics (one row per property per day): available, occupied, paid, comp, vacant, and out-of-order rooms, Occupancy %, Out-of-Order %, and RevPAR, by date, property, org hierarchy, brand, comp status, Tiger Site, and renovation. Source for the Occupancy Trend by Week dashboard and the ESA Property Operations agent."
+source: {{catalog}}.{{mart}}.fact_property_statistics
+filter: source.is_current = true
+joins:
+  - name: dim_prop
+    source: {{catalog}}.{{mart}}.vw_dim_property
+    'on': source.bk_property_id = dim_prop.bk_property_id
+  - name: dim_cal
+    source: {{catalog}}.{{common}}.dim_date
+    'on': source.bk_date_id = dim_cal.BK_Date_Dim_Id
+  - name: dim_rev
+    source: {{catalog}}.{{semantic}}.property_day_revenue
+    'on': source.bk_property_id = dim_rev.bk_property_id AND source.bk_date_id = dim_rev.bk_date_id
+dimensions:
+  - name: Date
+    expr: dim_cal.Date_Dt
+    display_name: Date
+    comment: "Calendar date of the property statistics (night audit date)."
+    synonyms: [day, business date, audit date]
+  - name: Week
+    expr: dim_cal.Week_Start_Dt
+    display_name: Week
+    comment: "First day of the date's week."
+    synonyms: [week start]
+  - name: Month
+    expr: dim_cal.Month_Start_Dt
+    display_name: Month
+    comment: "First day of the date's month."
+  - name: Year
+    expr: dim_cal.Yr_Nbr
+    display_name: Year
+    comment: "Calendar year."
+  - name: Brand
+    expr: dim_prop.brand_cd
+    display_name: Brand
+    comment: "Hotel brand code: ESAS, ESSS, or ESAP (current brand)."
+    synonyms: [brand code, ESAS, ESSS, ESAP]
+  - name: Comp Status
+    expr: dim_prop.comp_status
+    display_name: Comp Status
+    comment: "Comp or Non-Comp; Non-Comp hotels are excluded from like-for-like comparisons."
+    synonyms: [comparable status, same store]
+  - name: Division
+    expr: dim_prop.division_name
+    display_name: Division
+    comment: "Operations hierarchy level 1, led by a DVP."
+  - name: Region
+    expr: dim_prop.region_name
+    display_name: Region
+    comment: "Operations hierarchy level 2, led by an RVP or RDO."
+  - name: District
+    expr: dim_prop.district_name
+    display_name: District
+    comment: "Operations hierarchy level 3, led by a District Manager."
+  - name: DVP
+    expr: dim_prop.dvp_name
+    display_name: DVP
+    comment: "Divisional Vice President for the hotel's division."
+  - name: RVP/RDO
+    expr: dim_prop.rvp_rdo_name
+    display_name: RVP/RDO
+    comment: "Regional Vice President or Regional Director of Operations for the hotel's region."
+    synonyms: [RVP, RDO]
+  - name: District Manager
+    expr: dim_prop.dm_name
+    display_name: District Manager
+    comment: "District Manager (DM) for the hotel's district."
+    synonyms: [DM]
+  - name: General Manager
+    expr: dim_prop.gm_name
+    display_name: General Manager
+    comment: "General Manager (GM) of the hotel."
+    synonyms: [GM]
+  - name: Market
+    expr: dim_prop.market_name
+    display_name: Market
+    comment: "Market (metro area) of the hotel."
+  - name: Tiger Site
+    expr: "CASE WHEN dim_prop.tiger_site_flag THEN 'Tiger Site' ELSE 'Not Tiger Site' END"
+    display_name: Tiger Site
+    comment: "Whether the hotel is in the Tiger Site focused performance program."
+    synonyms: [tiger]
+  - name: Property
+    expr: dim_prop.property_name
+    display_name: Property
+    comment: "Hotel name."
+    synonyms: [hotel, site]
+  - name: Property Code
+    expr: dim_prop.property_code
+    display_name: Property Code
+    comment: "Hotel code."
+  - name: Renovation Status
+    expr: "COALESCE(dim_prop.current_renovation_status, 'None')"
+    display_name: Renovation Status
+    comment: "Status of the hotel's current or next renovation: In Progress, Planned, or None."
+    synonyms: [renovation]
+  - name: Under Renovation On Date
+    expr: "CASE WHEN dim_cal.Date_Dt BETWEEN dim_prop.current_renovation_start_date AND dim_prop.current_renovation_end_date OR dim_cal.Date_Dt BETWEEN dim_prop.prior_renovation_start_date AND dim_prop.prior_renovation_end_date THEN 'Under Renovation' ELSE 'Not Under Renovation' END"
+    display_name: Under Renovation On Date
+    comment: "Whether the date falls inside the hotel's current or most recent renovation window."
+    synonyms: [renovating, under renovation]
+measures:
+  - name: Available Rooms
+    expr: SUM(source.available_rooms)
+    display_name: Available Rooms
+    comment: "Room nights available to sell: room count minus out-of-order rooms."
+    synonyms: [rooms available, supply]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Occupied Rooms
+    expr: SUM(source.occupied_rooms)
+    display_name: Occupied Rooms
+    comment: "Occupied room nights: paid rooms plus comp rooms."
+    synonyms: [rooms occupied, rooms sold]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Paid Rooms
+    expr: SUM(source.paid_rooms)
+    display_name: Paid Rooms
+    comment: "Occupied room nights at a paid rate."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Comp Rooms
+    expr: SUM(source.comp_rooms)
+    display_name: Comp Rooms
+    comment: "Occupied room nights on the Complimentary rate segment (not the same as Comp Status)."
+    synonyms: [complimentary rooms]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Vacant Rooms
+    expr: SUM(source.vacant_rooms)
+    display_name: Vacant Rooms
+    comment: "Available rooms not occupied."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Out-of-Order Rooms
+    expr: SUM(source.out_of_order_rooms)
+    display_name: Out-of-Order Rooms
+    comment: "Room nights out of order for renovation or maintenance, removed from available rooms."
+    synonyms: [OOO, out of order, OOO rooms]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Total Rooms
+    expr: SUM(source.available_rooms + source.out_of_order_rooms)
+    display_name: Total Rooms
+    comment: "Room inventory nights: available rooms plus out-of-order rooms."
+    synonyms: [room inventory, capacity]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Occupancy
+    expr: "try_divide(MEASURE(`Occupied Rooms`), MEASURE(`Available Rooms`))"
+    display_name: Occupancy %
+    comment: "Occupied rooms divided by available rooms."
+    synonyms: [occupancy rate, occ, occupancy percent]
+    format:
+      type: percentage
+      decimal_places: {type: exact, places: 1}
+  - name: Out-of-Order Share
+    expr: "try_divide(MEASURE(`Out-of-Order Rooms`), MEASURE(`Total Rooms`))"
+    display_name: Out-of-Order %
+    comment: "Out-of-order rooms as a share of total rooms."
+    synonyms: [OOO percent, out of order rate]
+    format:
+      type: percentage
+      decimal_places: {type: exact, places: 1}
+  - name: Room Revenue
+    expr: SUM(dim_rev.room_revenue_amount)
+    display_name: Room Revenue
+    comment: "Gross room revenue in USD for the same property-days, from the stay ledger."
+    synonyms: [revenue]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: RevPAR
+    expr: "try_divide(MEASURE(`Room Revenue`), MEASURE(`Available Rooms`))"
+    display_name: RevPAR
+    comment: "Revenue per available room in USD: room revenue divided by available rooms."
+    synonyms: [revenue per available room]
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 2}
+  - name: Property Days
+    expr: COUNT(1)
+    display_name: Property Days
+    comment: "Number of property-day rows in the selection."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Latest Date
+    expr: "MAX(TO_DATE(CAST(source.bk_date_id AS STRING), 'yyyyMMdd'))"
+    display_name: Latest Date
+    comment: "Latest date loaded (the last night audit). Periods such as MTD or the last 4 weeks end on this date."
+    synonyms: [last audit date, data through]
+$$;
+
+CREATE OR REPLACE VIEW `{{catalog}}`.`{{semantic}}`.`booking_metrics`
+WITH METRICS
+LANGUAGE YAML
+AS $$
+version: 1.1
+comment: "Certified booking metrics from fact_reservation_summary (one current row per reservation): reservations, cancellations and cancellation rate, booked, current, on-the-books, and actual room nights, booked and actual room revenue, affiliate revenue, and pet share, by booked date, arrival month, property, org hierarchy, channel, rate segment, promotion, account, and booked length-of-stay tier."
+source: {{catalog}}.{{mart}}.fact_reservation_summary
+filter: source.is_current = true
+joins:
+  - name: dim_prop
+    source: {{catalog}}.{{mart}}.vw_dim_property
+    'on': source.bk_property_id = dim_prop.bk_property_id
+  - name: dim_cal
+    source: {{catalog}}.{{common}}.dim_date
+    'on': CAST(source.bk_date_id AS INT) = dim_cal.BK_Date_Dim_Id
+  - name: dim_chan
+    source: {{catalog}}.{{mart}}.dim_channel
+    'on': source.bk_channel_id = dim_chan.bk_channel_id AND dim_chan.is_current = true
+  - name: dim_rate
+    source: {{catalog}}.{{mart}}.dim_rate_segment
+    'on': source.bk_rate_segment_id = dim_rate.bk_rate_segment_id AND dim_rate.is_current = true
+  - name: dim_promo
+    source: {{catalog}}.{{mart}}.dim_promotion
+    'on': source.bk_promo_cd = dim_promo.bk_promo_cd AND dim_promo.is_current = true
+  - name: dim_acct
+    source: {{catalog}}.{{mart}}.dim_crm_account
+    'on': source.bk_crm_account_id = dim_acct.bk_crm_account_id AND dim_acct.is_current = true
+  - name: dim_los
+    source: {{catalog}}.{{mart}}.dim_los
+    'on': source.bk_original_los_id = dim_los.bk_los_id AND dim_los.is_current = true
+dimensions:
+  - name: Booked Date
+    expr: dim_cal.Date_Dt
+    display_name: Booked Date
+    comment: "Date the reservation was booked."
+    synonyms: [booking date, created date]
+  - name: Booked Week
+    expr: dim_cal.Week_Start_Dt
+    display_name: Booked Week
+    comment: "First day of the booked date's week."
+  - name: Booked Month
+    expr: dim_cal.Month_Start_Dt
+    display_name: Booked Month
+    comment: "First day of the booked date's month."
+  - name: Arrival Month
+    expr: "DATE_TRUNC('MONTH', source.current_arrival_date)"
+    display_name: Arrival Month
+    comment: "Month of the reservation's current arrival date."
+    synonyms: [check-in month, stay month]
+  - name: Brand
+    expr: dim_prop.brand_cd
+    display_name: Brand
+    comment: "Hotel brand code: ESAS, ESSS, or ESAP."
+    synonyms: [ESAS, ESSS, ESAP]
+  - name: Comp Status
+    expr: dim_prop.comp_status
+    display_name: Comp Status
+    comment: "Comp or Non-Comp hotel status."
+  - name: Division
+    expr: dim_prop.division_name
+    display_name: Division
+    comment: "Operations hierarchy level 1."
+  - name: Region
+    expr: dim_prop.region_name
+    display_name: Region
+    comment: "Operations hierarchy level 2."
+  - name: District
+    expr: dim_prop.district_name
+    display_name: District
+    comment: "Operations hierarchy level 3."
+  - name: District Manager
+    expr: dim_prop.dm_name
+    display_name: District Manager
+    comment: "District Manager (DM) for the hotel's district."
+    synonyms: [DM]
+  - name: Market
+    expr: dim_prop.market_name
+    display_name: Market
+    comment: "Market (metro area) of the hotel."
+  - name: Property
+    expr: dim_prop.property_name
+    display_name: Property
+    comment: "Hotel name."
+    synonyms: [hotel]
+  - name: Channel
+    expr: dim_chan.channel_name
+    display_name: Channel
+    comment: "Booking channel, for example Brand Web, Mobile App, Call Center, OTA - Expedia, OTA - Booking.com, GDS, Corporate Sales, Walk-In."
+    synonyms: [booking channel, source of business]
+  - name: Channel Network
+    expr: dim_chan.channel_network
+    display_name: Channel Network
+    comment: "Direct or Indirect."
+  - name: Rate Segment
+    expr: dim_rate.rate_segment_name
+    display_name: Rate Segment
+    comment: "Rate segment booked."
+    synonyms: [rate plan]
+  - name: Promotion
+    expr: dim_promo.promotion_name
+    display_name: Promotion
+    comment: "Promotion on the reservation, for example Stay 7+ and Save or No Promotion."
+    synonyms: [promo, offer]
+  - name: Promotion Code
+    expr: source.bk_promo_cd
+    display_name: Promotion Code
+    comment: "Promotion code, for example STAY7, MONTH30, NONE."
+  - name: Account
+    expr: dim_acct.account_name
+    display_name: Account
+    comment: "CRM account (company) the reservation is booked under."
+    synonyms: [company, corporate account]
+  - name: Account Tier
+    expr: dim_acct.account_tier
+    display_name: Account Tier
+    comment: "CRM account tier: Platinum, Gold, Silver, Bronze."
+  - name: Account Industry
+    expr: dim_acct.industry_name
+    display_name: Account Industry
+    comment: "Industry of the CRM account."
+    synonyms: [industry]
+  - name: Booked LOS Tier
+    expr: dim_los.los_band_1
+    display_name: Booked LOS Tier (OTB 4 Tier)
+    comment: "Length-of-stay tier at booking (original length of stay): 0-6, 7-14, 15-29, or 30+ nights."
+    synonyms: [OTB 4 Tier, LOS tier, length of stay]
+  - name: Cancelled
+    expr: "CASE WHEN source.reservation_cancel_flag THEN 'Cancelled' ELSE 'Not Cancelled' END"
+    display_name: Cancelled
+    comment: "Whether the reservation was cancelled."
+measures:
+  - name: Reservations
+    expr: COUNT(1)
+    display_name: Reservations
+    comment: "Number of reservations (current version of each)."
+    synonyms: [bookings, reservation count]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Cancelled Reservations
+    expr: COUNT(1) FILTER (WHERE source.reservation_cancel_flag)
+    display_name: Cancelled Reservations
+    comment: "Number of cancelled reservations."
+    synonyms: [cancellations]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Cancellation Rate
+    expr: "try_divide(MEASURE(`Cancelled Reservations`), MEASURE(`Reservations`))"
+    display_name: Cancellation Rate
+    comment: "Cancelled reservations divided by all reservations booked."
+    synonyms: [cancel rate, cancellation percent]
+    format:
+      type: percentage
+      decimal_places: {type: exact, places: 1}
+  - name: Booked Room Nights
+    expr: SUM(source.original_room_nights_count)
+    display_name: Booked Room Nights
+    comment: "Room nights as originally booked."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Current Room Nights
+    expr: SUM(source.current_room_nights_count)
+    display_name: Current Room Nights
+    comment: "Room nights on the reservation's current version."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: On-the-Books Room Nights
+    expr: SUM(source.otb_room_nights_count)
+    display_name: On-the-Books Room Nights
+    comment: "Future room nights still on the books after the latest night audit."
+    synonyms: [OTB, on the books, OTB nights, booking pace]
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Actual Room Nights
+    expr: SUM(source.actual_room_nights_count)
+    display_name: Actual Room Nights
+    comment: "Room nights actually stayed."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Booked Room Revenue
+    expr: SUM(source.original_room_revenue_amount)
+    display_name: Booked Room Revenue
+    comment: "Room revenue as originally booked, in USD."
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Actual Room Revenue
+    expr: SUM(source.actual_room_revenue_amount)
+    display_name: Actual Room Revenue
+    comment: "Room revenue actually realized from the stay, in USD."
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Affiliate Revenue
+    expr: SUM(source.affiliate_revenue_total_amount_before_tax)
+    display_name: Affiliate Revenue
+    comment: "Revenue before tax on affiliate-coded reservations, in USD."
+    format:
+      type: currency
+      currency_code: USD
+      decimal_places: {type: exact, places: 0}
+  - name: Pet Reservations
+    expr: COUNT(1) FILTER (WHERE source.pets_flag)
+    display_name: Pet Reservations
+    comment: "Reservations with pets."
+    format:
+      type: number
+      decimal_places: {type: exact, places: 0}
+  - name: Pet Share
+    expr: "try_divide(MEASURE(`Pet Reservations`), MEASURE(`Reservations`))"
+    display_name: Pet Share
+    comment: "Share of reservations with pets."
+    synonyms: [pet rate]
+    format:
+      type: percentage
+      decimal_places: {type: exact, places: 1}
+  - name: Latest Booked Date
+    expr: MAX(source.booked_date)
+    display_name: Latest Booked Date
+    comment: "Latest booking date loaded."
+$$;
+
+-- Certification: the system governed tag Catalog Explorer and Genie show as a certified badge.
+ALTER VIEW `{{catalog}}`.`{{semantic}}`.`resstay_metrics` SET TAGS ('system.certification_status' = 'certified');
+ALTER VIEW `{{catalog}}`.`{{semantic}}`.`occupancy_metrics` SET TAGS ('system.certification_status' = 'certified');
+ALTER VIEW `{{catalog}}`.`{{semantic}}`.`booking_metrics` SET TAGS ('system.certification_status' = 'certified');

@@ -1,0 +1,14 @@
+# ResStay Dashboard and Occupancy Trend by Week. tools/render.py writes the files from tools/lib/dashboards.py.
+# Credentials are not embedded, so each viewer's own row security applies.
+resources:
+  dashboards:
+    resstay:
+      display_name: ESA ResStay Dashboard
+      warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+      file_path: ../build/dashboards/resstay.lvdash.json
+      embed_credentials: false
+    occupancy:
+      display_name: ESA Occupancy Trend by Week
+      warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+      file_path: ../build/dashboards/occupancy.lvdash.json
+      embed_credentials: false

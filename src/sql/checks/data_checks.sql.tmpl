@@ -1,0 +1,184 @@
+-- Hand-written data checks. Each block returns one row with a `failures` count; 0 means pass.
+-- Integrity checks (row counts, unique keys, one current row per key, key references) are generated from the contract.
+
+-- @check run_info_single_row
+SELECT CASE WHEN count(*) = 1 THEN 0 ELSE 1 END AS failures
+FROM `{{catalog}}`.`{{staging}}`.`run_info`
+
+-- @check stay_dates_within_window
+SELECT count(*) AS failures
+FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay` AS f
+CROSS JOIN `{{catalog}}`.`{{staging}}`.`run_info` AS r
+WHERE to_date(f.bk_date_id, 'yyyyMMdd') NOT BETWEEN r.history_start_date AND r.as_of_date
+
+-- @check stay_max_date_is_as_of
+SELECT CASE WHEN (SELECT max(to_date(bk_date_id, 'yyyyMMdd')) FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`)
+                 = (SELECT max(as_of_date) FROM `{{catalog}}`.`{{staging}}`.`run_info`)
+            THEN 0 ELSE 1 END AS failures
+
+-- @check date_dimension_complete
+SELECT CASE WHEN count(*) = datediff(DATE'2050-12-31', DATE'1980-01-01') + 1
+             AND count(DISTINCT Date_Dt) = count(*)
+             AND min(Date_Dt) = DATE'1980-01-01' AND max(Date_Dt) = DATE'2050-12-31'
+            THEN 0 ELSE 1 END AS failures
+FROM `{{catalog}}`.`{{common}}`.`dim_date`
+
+-- @check occupied_equals_stay_nights
+WITH lines AS (
+  SELECT bk_property_id, CAST(bk_date_id AS INT) AS date_id, sum(consumed_room_nights_count) AS nights
+  FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`
+  GROUP BY bk_property_id, CAST(bk_date_id AS INT)
+)
+SELECT count(*) AS failures
+FROM `{{catalog}}`.`{{mart}}`.`fact_property_statistics` AS s
+FULL OUTER JOIN lines AS l ON l.bk_property_id = s.bk_property_id AND l.date_id = s.bk_date_id
+WHERE coalesce(s.occupied_rooms, 0) <> coalesce(l.nights, 0)
+
+-- @check room_capacity_consistent
+SELECT count(*) AS failures
+FROM `{{catalog}}`.`{{mart}}`.`fact_property_statistics` AS s
+JOIN (SELECT bk_property_id, room_count FROM `{{catalog}}`.`{{mart}}`.`dim_property` WHERE is_current) AS p
+  ON p.bk_property_id = s.bk_property_id
+WHERE s.available_rooms + s.out_of_order_rooms <> p.room_count
+   OR s.occupied_rooms > s.available_rooms
+   OR s.vacant_rooms <> s.available_rooms - s.occupied_rooms
+   OR s.paid_rooms + s.comp_rooms <> s.occupied_rooms
+   OR least(s.available_rooms, s.occupied_rooms, s.vacant_rooms, s.paid_rooms, s.comp_rooms, s.out_of_order_rooms) < 0
+
+-- @check revenue_rules
+SELECT count(*) AS failures
+FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`
+WHERE abs(net_room_revenue - (room_revenue_amount - credit_revenue_amount)) > 0.005
+   OR abs(total_room_revenue - (room_revenue_amount + other_rooms_revenue)) > 0.005
+   OR consumed_room_nights_count NOT IN (0, 1)
+   OR (consumed_room_nights_count = 0 AND room_revenue_amount <> 0)
+
+-- @check occupancy_and_adr_in_range
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+occ AS (
+  SELECT try_divide(sum(s.occupied_rooms), sum(s.available_rooms)) AS occupancy
+  FROM `{{catalog}}`.`{{mart}}`.`fact_property_statistics` AS s CROSS JOIN r
+  WHERE to_date(CAST(s.bk_date_id AS STRING), 'yyyyMMdd') > date_sub(r.as_of_date, 28)
+),
+adr AS (
+  SELECT try_divide(sum(f.room_revenue_amount), sum(f.consumed_room_nights_count)) AS adr
+  FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay` AS f CROSS JOIN r
+  WHERE to_date(f.bk_date_id, 'yyyyMMdd') > date_sub(r.as_of_date, 28)
+)
+SELECT CASE WHEN occ.occupancy BETWEEN 0.60 AND 0.85 AND adr.adr BETWEEN 60 AND 85 THEN 0 ELSE 1 END AS failures
+FROM occ CROSS JOIN adr
+
+-- @check los_revenue_mix
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+rev AS (
+  SELECT l.los_band_1 AS tier, sum(f.room_revenue_amount) AS revenue
+  FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay` AS f
+  JOIN `{{catalog}}`.`{{mart}}`.`fact_reservation_summary` AS res
+    ON res.bk_reservation_id = f.bk_reservation_id AND res.is_current
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_los` AS l ON l.bk_los_id = res.bk_current_los_id AND l.is_current
+  CROSS JOIN r
+  WHERE to_date(f.bk_date_id, 'yyyyMMdd') > date_sub(r.as_of_date, 365)
+  GROUP BY l.los_band_1
+),
+share AS (SELECT tier, try_divide(revenue, sum(revenue) OVER ()) AS s FROM rev)
+SELECT 4 - count(*) AS failures
+FROM share
+WHERE (tier = '0-6' AND s BETWEEN 0.18 AND 0.27)
+   OR (tier = '7-14' AND s BETWEEN 0.11 AND 0.19)
+   OR (tier = '15-29' AND s BETWEEN 0.06 AND 0.13)
+   OR (tier = '30+' AND s BETWEEN 0.46 AND 0.61)
+
+-- @check story_renovation_district_biggest_decline
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+p AS (SELECT bk_property_id, district_name, is_under_renovation_flag FROM `{{catalog}}`.`{{mart}}`.`vw_dim_property`),
+rev AS (
+  SELECT p.district_name,
+         sum(CASE WHEN f.d > date_sub(r.as_of_date, 28) AND f.d <= r.as_of_date THEN f.room_revenue_amount ELSE 0 END) AS cy,
+         sum(CASE WHEN f.d > date_sub(add_months(r.as_of_date, -12), 28) AND f.d <= add_months(r.as_of_date, -12)
+                  THEN f.room_revenue_amount ELSE 0 END) AS ly
+  FROM (SELECT bk_property_id, room_revenue_amount, to_date(bk_date_id, 'yyyyMMdd') AS d
+        FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`) AS f
+  JOIN p ON p.bk_property_id = f.bk_property_id
+  CROSS JOIN r
+  GROUP BY p.district_name
+),
+ranked AS (
+  SELECT district_name, try_divide(cy, ly) - 1 AS yoy, row_number() OVER (ORDER BY try_divide(cy, ly)) AS rn
+  FROM rev WHERE ly > 0
+),
+reno AS (SELECT DISTINCT district_name FROM p WHERE is_under_renovation_flag)
+SELECT CASE WHEN (SELECT count(*) FROM reno) = 1
+             AND (SELECT district_name FROM ranked WHERE rn = 1) = (SELECT max(district_name) FROM reno)
+             AND (SELECT yoy FROM ranked WHERE rn = 1) < -0.08
+            THEN 0 ELSE 1 END AS failures
+
+-- @check story_district_spread
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+rev AS (
+  SELECT p.district_name,
+         sum(CASE WHEN f.d > date_sub(r.as_of_date, 28) AND f.d <= r.as_of_date THEN f.room_revenue_amount ELSE 0 END) AS cy,
+         sum(CASE WHEN f.d > date_sub(add_months(r.as_of_date, -12), 28) AND f.d <= add_months(r.as_of_date, -12)
+                  THEN f.room_revenue_amount ELSE 0 END) AS ly
+  FROM (SELECT bk_property_id, room_revenue_amount, to_date(bk_date_id, 'yyyyMMdd') AS d
+        FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay`) AS f
+  JOIN `{{catalog}}`.`{{mart}}`.`vw_dim_property` AS p ON p.bk_property_id = f.bk_property_id
+  CROSS JOIN r
+  GROUP BY p.district_name
+)
+SELECT CASE WHEN max(try_divide(cy, ly)) - min(try_divide(cy, ly)) >= 0.15 THEN 0 ELSE 1 END AS failures
+FROM rev WHERE ly > 0
+
+-- @check story_channel_shift
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+f AS (
+  SELECT c.channel_name, to_date(s.bk_date_id, 'yyyyMMdd') AS d, s.room_revenue_amount
+  FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay` AS s
+  JOIN `{{catalog}}`.`{{mart}}`.`fact_reservation_summary` AS res
+    ON res.bk_reservation_id = s.bk_reservation_id AND res.is_current
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_channel` AS c ON c.bk_channel_id = res.bk_channel_id AND c.is_current
+),
+yoy AS (
+  SELECT f.channel_name,
+         try_divide(
+           sum(CASE WHEN f.d > date_sub(r.as_of_date, 90) AND f.d <= r.as_of_date THEN f.room_revenue_amount ELSE 0 END),
+           sum(CASE WHEN f.d > date_sub(add_months(r.as_of_date, -12), 90) AND f.d <= add_months(r.as_of_date, -12)
+                    THEN f.room_revenue_amount ELSE 0 END)) - 1 AS g
+  FROM f CROSS JOIN r
+  GROUP BY f.channel_name
+)
+SELECT CASE WHEN max(CASE WHEN channel_name = 'Brand Web' THEN g END) > max(CASE WHEN channel_name = 'Call Center' THEN g END) + 0.05
+             AND max(CASE WHEN channel_name = 'Mobile App' THEN g END) > max(CASE WHEN channel_name = 'Call Center' THEN g END) + 0.05
+             AND max(CASE WHEN channel_name = 'Call Center' THEN g END) < 0.01
+            THEN 0 ELSE 1 END AS failures
+FROM yoy
+
+-- @check story_stay7_lift
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+s AS (
+  SELECT actual_arrival_date AS a
+  FROM `{{catalog}}`.`{{mart}}`.`fact_reservation_summary`
+  WHERE is_current AND current_room_nights_count BETWEEN 7 AND 14 AND actual_arrival_date IS NOT NULL
+)
+SELECT CASE WHEN try_divide(
+                   count_if(s.a > date_sub(r.as_of_date, 90) AND s.a <= r.as_of_date),
+                   count_if(s.a > date_sub(add_months(r.as_of_date, -12), 90) AND s.a <= add_months(r.as_of_date, -12))) >= 1.06
+            THEN 0 ELSE 1 END AS failures
+FROM s CROSS JOIN r
+
+-- @check story_ramp_account
+WITH r AS (SELECT as_of_date FROM `{{catalog}}`.`{{staging}}`.`run_info`),
+n AS (
+  SELECT to_date(s.bk_date_id, 'yyyyMMdd') AS d, s.consumed_room_nights_count AS nights
+  FROM `{{catalog}}`.`{{mart}}`.`fact_actual_stay` AS s
+  JOIN `{{catalog}}`.`{{mart}}`.`fact_reservation_summary` AS res
+    ON res.bk_reservation_id = s.bk_reservation_id AND res.is_current
+  JOIN `{{catalog}}`.`{{mart}}`.`vw_dim_property` AS p ON p.bk_property_id = s.bk_property_id
+  WHERE res.bk_crm_account_id = 'CRM00001' AND p.market_name = 'Phoenix'
+),
+w AS (
+  SELECT coalesce(sum(CASE WHEN n.d > date_sub(r.as_of_date, 60) AND n.d <= r.as_of_date THEN n.nights END), 0) AS cy,
+         coalesce(sum(CASE WHEN n.d > date_sub(add_months(r.as_of_date, -12), 60) AND n.d <= add_months(r.as_of_date, -12)
+                           THEN n.nights END), 0) AS ly
+  FROM n CROSS JOIN r
+)
+SELECT CASE WHEN cy >= 20 AND cy >= 2 * ly THEN 0 ELSE 1 END AS failures FROM w

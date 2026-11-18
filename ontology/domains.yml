@@ -1,0 +1,100 @@
+# ESA business domains and subdomains for Discover (Genie Ontology, Beta), applied by tools/ontology.py.
+# Each domain is backed by a governed tag with the same key; a subdomain's key is "<parent tag key>/<name>".
+# Every key starts with "ESA " because the sandbox account is shared with other teams.
+# Assets are logical names: <mart|common|semantic>.<object> for Unity Catalog objects (names come from the bundle
+# target, so the esa target re-points them), dashboard:<key> and genie:<key> for workspace objects (IDs come from
+# the manifest). Assets that do not exist yet are reported as pending, not created.
+version: 1
+domains:
+  - key: revenue
+    tag_key: ESA Revenue Management
+    subtitle: >-
+      How ESA earns room revenue: ResStay results, distribution channels, rate segments, promotions, and corporate
+      accounts.
+    description: >-
+      Revenue Management holds the metrics ESA's operating leaders use to run room revenue: Room Revenue, Net Room
+      Revenue, Room Nights, and ADR from the ResStay stay ledger, and the booking side that drives them, including
+      channels, rate segments, promotions such as Stay 7+, CRM accounts, on-the-books nights, and cancellations.
+      Start with ResStay for results, then Distribution and Booking for the reasons behind them.
+    subdomains:
+      - key: resstay
+        name: ResStay
+        subtitle: >-
+          Stay-night revenue results: Room Revenue, Net Room Revenue, Room Nights, ADR, length-of-stay tiers, brand,
+          and comp status.
+        description: >-
+          What guests actually stayed and paid. The stay ledger fact_actual_stay has one line per occupied room night
+          plus credit adjustment lines. This subdomain also holds the shared date dimension, the ResStay metric view,
+          the ResStay Dashboard, and the ESA ResStay Revenue agent. Use it for MTD, QTD, and YTD results against last
+          year by brand, DVP, RVP/RDO, district manager, market, length-of-stay tier, and channel.
+        assets:
+          - mart.fact_actual_stay
+          - common.dim_date
+          - semantic.resstay_metrics
+          - dashboard:resstay
+          - genie:resstay_revenue
+      - key: booking
+        name: Distribution and Booking
+        subtitle: >-
+          How stays are booked: channels, rate segments, promotions, CRM accounts, on-the-books nights, and
+          cancellations.
+        description: >-
+          Reservation-level data from fact_reservation_summary and its dimensions: booking channel, rate segment,
+          promotion (including Stay 7+), corporate CRM accounts and their parents, length-of-stay bands, and the
+          cancellation and pet flags. Use it to explain why ResStay results moved, through channel mix, promotion lift,
+          account production, and booking pace.
+        assets:
+          - mart.fact_reservation_summary
+          - semantic.booking_metrics
+          - mart.dim_reservation
+          - mart.dim_channel
+          - mart.dim_rate_segment
+          - mart.dim_promotion
+          - mart.dim_crm_account
+          - mart.dim_los
+  - key: operations
+    tag_key: ESA Property Operations
+    subtitle: >-
+      How ESA's hotels run: occupancy, out-of-order rooms, RevPAR, renovations, and the property portfolio and org
+      hierarchy.
+    description: >-
+      Property Operations covers the daily property statistics behind occupancy and RevPAR, and the portfolio data that
+      frames every metric: hotel attributes, the operating and leadership hierarchies (Division, Region, District; DVP,
+      RVP/RDO, DM, GM), property segments such as Tiger Site, renovations, and room types.
+    subdomains:
+      - key: occupancy
+        name: Occupancy
+        subtitle: >-
+          Daily property statistics: available, occupied, paid, comp, and out-of-order rooms, with Occupancy % and
+          RevPAR.
+        description: >-
+          Built on fact_property_statistics, one row per property per day, with the shared date dimension, the
+          occupancy metric view, the Occupancy Trend by Week dashboard, and the ESA Property Operations agent. Use it
+          for weekly occupancy against last year, the effect of out-of-order rooms, and RevPAR by brand, market, and
+          district.
+        assets:
+          - mart.fact_property_statistics
+          - semantic.occupancy_metrics
+          - common.dim_date
+          - dashboard:occupancy
+          - genie:property_operations
+      - key: portfolio
+        name: Portfolio and Hierarchy
+        subtitle: >-
+          The hotels and who runs them: property attributes, the org hierarchy, segments such as Tiger Site,
+          renovations, and room types.
+        description: >-
+          Property master data: dim_property and dim_property_extended, the hierarchy, segment, and renovation
+          dimensions with their property bridge tables, room types, and vw_dim_property, which combines them into one
+          current row per hotel. Every dashboard and agent filters through this subdomain.
+        assets:
+          - mart.dim_property
+          - mart.dim_property_extended
+          - mart.dim_property_hierarchy
+          - mart.fact_property_hierarchy
+          - mart.dim_property_segment
+          - mart.fact_property_segment
+          - mart.dim_property_renovation
+          - mart.fact_property_renovation
+          - mart.vw_dim_property
+          - mart.dim_room_type

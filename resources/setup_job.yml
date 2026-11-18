@@ -1,0 +1,125 @@
+resources:
+  jobs:
+    setup:
+      name: ESA ResStay Demo - Setup
+      max_concurrent_runs: 1
+      parameters:
+        - name: as_of_date
+          default: ""
+        - name: story_anchor_date
+          default: ${var.story_anchor_date}
+        - name: run_data
+          default: ${var.run_data}
+      environments:
+        - environment_key: generator
+          spec:
+            environment_version: "6"
+            dependencies:
+              - ../dist/*.whl
+      tasks:
+        - task_key: data_enabled
+          condition_task:
+            op: EQUAL_TO
+            left: "{{job.parameters.run_data}}"
+            right: "true"
+        - task_key: schemas
+          depends_on:
+            - task_key: data_enabled
+              outcome: "true"
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/00_schemas.sql
+              source: WORKSPACE
+        - task_key: tables
+          depends_on:
+            - task_key: generate
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/10_tables.sql
+              source: WORKSPACE
+        - task_key: generate
+          depends_on:
+            - task_key: schemas
+          environment_key: generator
+          python_wheel_task:
+            package_name: esa_resstay_demo
+            entry_point: generate
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --staging-schema
+              - ${var.staging_schema}
+              - --staging-schema-file
+              - ${workspace.file_path}/build/staging_schema.json
+              - --as-of
+              - "{{job.parameters.as_of_date}}"
+              - --story-anchor
+              - "{{job.parameters.story_anchor_date}}"
+              - --seed
+              - ${var.seed}
+              - --scale
+              - ${var.scale_properties}
+        - task_key: load
+          depends_on:
+            - task_key: tables
+            - task_key: generate
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/20_load.sql
+              source: WORKSPACE
+        - task_key: views
+          depends_on:
+            - task_key: load
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/30_views.sql
+              source: WORKSPACE
+        - task_key: materialized_views
+          depends_on:
+            - task_key: load
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/31_materialized_views.sql
+              source: WORKSPACE
+        - task_key: comments
+          depends_on:
+            - task_key: views
+            - task_key: materialized_views
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/35_comments.sql
+              source: WORKSPACE
+        - task_key: metric_views
+          depends_on:
+            - task_key: views
+            - task_key: materialized_views
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/50_metric_views.sql
+              source: WORKSPACE
+        - task_key: security
+          depends_on:
+            - task_key: views
+            - task_key: materialized_views
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/60_security.sql
+              source: WORKSPACE
+        - task_key: data_checks
+          depends_on:
+            - task_key: comments
+            - task_key: metric_views
+            - task_key: security
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/40_data_checks.sql
+              source: WORKSPACE

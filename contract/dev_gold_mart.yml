@@ -1,0 +1,477 @@
+# Table contract for the 20 ESA dev_gold objects this demo replicates.
+# source: exact   = column names and order match ESA's dev_gold.mart layout
+#         derived = best guess from the Genie Code summary of ESA's tables (replace when a metadata export arrives)
+# key: surrogate | business ; ref: <table>.<column> (join_cast when the two key types differ on purpose)
+version: 1
+history_columns:
+  - {name: hash_diff, type: STRING}
+  - {name: record_source, type: STRING}
+  - {name: etl_id, type: STRING}
+  - {name: load_date_time, type: TIMESTAMP}
+  - {name: dq_status, type: STRING}
+  - {name: active_start_date_time, type: TIMESTAMP}
+  - {name: active_end_date_time, type: TIMESTAMP}
+  - {name: is_current, type: BOOLEAN}
+  - {name: is_deleted, type: BOOLEAN}
+tables:
+  - name: fact_actual_stay
+    schema: mart
+    kind: table
+    source: exact
+    grain: One stay ledger line - one room charge per occupied night, plus credit adjustment lines.
+    cluster_by: [bk_date_id, bk_property_id]
+    columns:
+      - {name: fact_actual_stay_id, type: STRING, key: surrogate}
+      - {name: entity_id, type: STRING}
+      - {name: hkpms_subledger_sid, type: STRING}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_date_id, type: STRING, ref: dim_date.BK_Date_Dim_Id, join_cast: INT}
+      - {name: bk_reservation_id, type: STRING, ref: dim_reservation.bk_reservation_id}
+      - {name: bk_rate_segment_id, type: STRING, ref: dim_rate_segment.bk_rate_segment_id}
+      - {name: bk_room_type_id, type: STRING, ref: dim_room_type.bk_room_type_id}
+      - {name: consumed_room_nights_count, type: INT}
+      - {name: room_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: credit_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: other_rooms_revenue, type: "DECIMAL(38,2)"}
+      - {name: net_room_revenue, type: "DECIMAL(38,2)"}
+      - {name: total_room_revenue, type: "DECIMAL(38,2)"}
+
+  - name: fact_reservation_summary
+    schema: mart
+    kind: table
+    source: derived
+    grain: One reservation version (date changes keep the prior version with is_current = false).
+    cluster_by: [bk_date_id, bk_property_id]
+    columns:
+      - {name: fact_reservation_summary_id, type: STRING, key: surrogate}
+      - {name: entity_id, type: STRING}
+      - {name: bk_reservation_id, type: STRING, ref: dim_reservation.bk_reservation_id}
+      - {name: bk_crm_account_id, type: STRING, ref: dim_crm_account.bk_crm_account_id}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_date_id, type: STRING, ref: dim_date.BK_Date_Dim_Id, join_cast: INT}
+      - {name: bk_channel_id, type: STRING, ref: dim_channel.bk_channel_id}
+      - {name: bk_original_los_id, type: STRING, ref: dim_los.bk_los_id}
+      - {name: bk_current_los_id, type: STRING, ref: dim_los.bk_los_id}
+      - {name: bk_otb_los_id, type: STRING, ref: dim_los.bk_los_id}
+      - {name: bk_actual_los_id, type: STRING, ref: dim_los.bk_los_id}
+      - {name: bk_rate_segment_id, type: STRING, ref: dim_rate_segment.bk_rate_segment_id}
+      - {name: bk_room_type_id, type: STRING, ref: dim_room_type.bk_room_type_id}
+      - {name: bk_promo_cd, type: STRING, ref: dim_promotion.bk_promo_cd}
+      - {name: booked_date, type: DATE}
+      - {name: original_arrival_date, type: DATE}
+      - {name: original_departure_date, type: DATE}
+      - {name: current_arrival_date, type: DATE}
+      - {name: current_departure_date, type: DATE}
+      - {name: actual_arrival_date, type: DATE}
+      - {name: actual_departure_date, type: DATE}
+      - {name: original_room_nights_count, type: INT}
+      - {name: current_room_nights_count, type: INT}
+      - {name: otb_room_nights_count, type: INT}
+      - {name: actual_room_nights_count, type: INT}
+      - {name: original_room_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: current_room_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: actual_room_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: affiliate_revenue_total_amount_before_tax, type: "DECIMAL(38,2)"}
+      - {name: reservation_cancel_flag, type: BOOLEAN}
+      - {name: cancel_date, type: DATE}
+      - {name: pets_flag, type: BOOLEAN}
+
+  - name: fact_property_statistics
+    schema: mart
+    kind: materialized_view
+    source: derived
+    grain: One row per property per day from the PMS night audit.
+    cluster_by: [bk_property_id, bk_date_id]
+    unique_key: [bk_property_id, bk_date_id]
+    columns:
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_date_id, type: INT, ref: dim_date.BK_Date_Dim_Id}
+      - {name: available_rooms, type: INT}
+      - {name: occupied_rooms, type: INT}
+      - {name: vacant_rooms, type: INT}
+      - {name: paid_rooms, type: INT}
+      - {name: comp_rooms, type: INT}
+      - {name: out_of_order_rooms, type: INT}
+
+  - name: fact_property_hierarchy
+    schema: mart
+    kind: table
+    source: derived
+    grain: Bridge - one row per property per hierarchy membership.
+    columns:
+      - {name: fact_property_hierarchy_id, type: STRING, key: surrogate}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_property_hierarchy_id, type: STRING, ref: dim_property_hierarchy.bk_property_hierarchy_id}
+      - {name: member_flag, type: BOOLEAN}
+
+  - name: fact_property_segment
+    schema: mart
+    kind: table
+    source: derived
+    grain: Bridge - one row per property per segment membership.
+    columns:
+      - {name: fact_property_segment_id, type: STRING, key: surrogate}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_property_segment_id, type: STRING, ref: dim_property_segment.bk_property_segment_id}
+      - {name: member_flag, type: BOOLEAN}
+
+  - name: fact_property_renovation
+    schema: mart
+    kind: table
+    source: derived
+    grain: Bridge - one row per property per renovation project.
+    columns:
+      - {name: fact_property_renovation_id, type: STRING, key: surrogate}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: bk_property_renovation_id, type: STRING, ref: dim_property_renovation.bk_property_renovation_id}
+      - {name: member_flag, type: BOOLEAN}
+
+  - name: dim_property
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per property version (brand conversions keep the prior version).
+    columns:
+      - {name: dim_property_id, type: STRING, key: surrogate}
+      - {name: bk_property_id, type: STRING, key: business}
+      - {name: property_code, type: STRING}
+      - {name: property_name, type: STRING}
+      - {name: brand_cd, type: STRING}
+      - {name: brand_name, type: STRING}
+      - {name: market_name, type: STRING}
+      - {name: submarket_name, type: STRING}
+      - {name: ownership_type, type: STRING}
+      - {name: address_line_1, type: STRING}
+      - {name: city_name, type: STRING}
+      - {name: state_cd, type: STRING}
+      - {name: postal_cd, type: STRING}
+      - {name: country_cd, type: STRING}
+      - {name: latitude, type: DOUBLE}
+      - {name: longitude, type: DOUBLE}
+      - {name: time_zone_name, type: STRING}
+      - {name: room_count, type: INT}
+      - {name: property_status, type: STRING}
+
+  - name: dim_property_extended
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per property with STR, comp status, and fee attributes.
+    columns:
+      - {name: dim_property_extended_id, type: STRING, key: surrogate}
+      - {name: bk_property_id, type: STRING, key: business, ref: dim_property.bk_property_id}
+      - {name: open_date, type: DATE}
+      - {name: acquisition_date, type: DATE}
+      - {name: disposition_date, type: DATE}
+      - {name: str_property_id, type: STRING}
+      - {name: str_market_name, type: STRING}
+      - {name: str_submarket_name, type: STRING}
+      - {name: str_chain_scale, type: STRING}
+      - {name: str_class, type: STRING}
+      - {name: str_location_type, type: STRING}
+      - {name: comp_status, type: STRING}
+      - {name: comp_status_reason, type: STRING}
+      - {name: pet_fee_amount, type: "DECIMAL(38,2)"}
+      - {name: franchise_fee_pct, type: "DECIMAL(5,2)"}
+      - {name: management_fee_pct, type: "DECIMAL(5,2)"}
+
+  - name: dim_property_hierarchy
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per property per hierarchy version ("Operations" or "Leadership").
+    columns:
+      - {name: dim_property_hierarchy_id, type: STRING, key: surrogate}
+      - {name: bk_property_hierarchy_id, type: STRING, key: business}
+      - {name: hierarchy_name, type: STRING}
+      - {name: level_1_name, type: STRING}
+      - {name: level_1_value, type: STRING}
+      - {name: level_2_name, type: STRING}
+      - {name: level_2_value, type: STRING}
+      - {name: level_3_name, type: STRING}
+      - {name: level_3_value, type: STRING}
+      - {name: level_4_name, type: STRING}
+      - {name: level_4_value, type: STRING}
+      - {name: level_5_name, type: STRING}
+      - {name: level_5_value, type: STRING}
+      - {name: level_6_name, type: STRING}
+      - {name: level_6_value, type: STRING}
+      - {name: level_7_name, type: STRING}
+      - {name: level_7_value, type: STRING}
+      - {name: level_8_name, type: STRING}
+      - {name: level_8_value, type: STRING}
+      - {name: level_9_name, type: STRING}
+      - {name: level_9_value, type: STRING}
+      - {name: level_10_name, type: STRING}
+      - {name: level_10_value, type: STRING}
+
+  - name: dim_property_segment
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per property segment (Location, Service Level, Program).
+    columns:
+      - {name: dim_property_segment_id, type: STRING, key: surrogate}
+      - {name: bk_property_segment_id, type: STRING, key: business}
+      - {name: segment_type, type: STRING}
+      - {name: segment_name, type: STRING}
+      - {name: segment_desc, type: STRING}
+
+  - name: dim_property_renovation
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per renovation project.
+    columns:
+      - {name: dim_property_renovation_id, type: STRING, key: surrogate}
+      - {name: bk_property_renovation_id, type: STRING, key: business}
+      - {name: renovation_type, type: STRING}
+      - {name: renovation_phase, type: STRING}
+      - {name: renovation_status, type: STRING}
+      - {name: renovation_start_date, type: DATE}
+      - {name: renovation_end_date, type: DATE}
+      - {name: rooms_impacted_count, type: INT}
+      - {name: capex_budget_amount, type: "DECIMAL(38,2)"}
+
+  - name: dim_reservation
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per reservation version.
+    cluster_by: [bk_reservation_id]
+    columns:
+      - {name: dim_reservation_id, type: STRING, key: surrogate}
+      - {name: bk_reservation_id, type: STRING, key: business}
+      - {name: bk_property_id, type: STRING, ref: dim_property.bk_property_id}
+      - {name: confirmation_number, type: STRING}
+      - {name: reservation_status, type: STRING}
+      - {name: reservation_source, type: STRING}
+      - {name: adults_count, type: INT}
+      - {name: children_count, type: INT}
+      - {name: affiliate_cd, type: STRING}
+      - {name: affiliate_name, type: STRING}
+
+  - name: dim_crm_account
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per CRM (Salesforce) account.
+    columns:
+      - {name: dim_crm_account_id, type: STRING, key: surrogate}
+      - {name: bk_crm_account_id, type: STRING, key: business}
+      - {name: account_number, type: STRING}
+      - {name: account_name, type: STRING}
+      - {name: account_type, type: STRING}
+      - {name: account_status, type: STRING}
+      - {name: account_tier, type: STRING}
+      - {name: parent_account_id, type: STRING, ref: dim_crm_account.bk_crm_account_id}
+      - {name: parent_account_name, type: STRING}
+      - {name: ultimate_parent_account_id, type: STRING, ref: dim_crm_account.bk_crm_account_id}
+      - {name: ultimate_parent_account_name, type: STRING}
+      - {name: merged_into_account_id, type: STRING, ref: dim_crm_account.bk_crm_account_id}
+      - {name: industry_name, type: STRING}
+      - {name: sic_cd, type: STRING}
+      - {name: naics_cd, type: STRING}
+      - {name: dnb_duns_number, type: STRING}
+      - {name: dnb_business_name, type: STRING}
+      - {name: dnb_employee_count, type: INT}
+      - {name: dnb_annual_revenue_amount, type: "DECIMAL(38,2)"}
+      - {name: dnb_hq_city_name, type: STRING}
+      - {name: dnb_hq_state_cd, type: STRING}
+      - {name: dnb_hq_country_cd, type: STRING}
+      - {name: dnb_risk_score, type: INT}
+      - {name: account_owner_name, type: STRING}
+      - {name: account_owner_email, type: STRING}
+      - {name: sales_region_name, type: STRING}
+      - {name: billing_city_name, type: STRING}
+      - {name: billing_state_cd, type: STRING}
+      - {name: billing_postal_cd, type: STRING}
+      - {name: billing_country_cd, type: STRING}
+      - {name: website_domain, type: STRING}
+      - {name: payment_terms, type: STRING}
+      - {name: credit_limit_amount, type: "DECIMAL(38,2)"}
+      - {name: account_created_date, type: DATE}
+      - {name: last_activity_date, type: DATE}
+      - {name: contract_start_date, type: DATE}
+      - {name: contract_end_date, type: DATE}
+      - {name: preferred_rate_segment_id, type: STRING, ref: dim_rate_segment.bk_rate_segment_id}
+      - {name: key_account_flag, type: BOOLEAN}
+
+  - name: dim_channel
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per booking channel.
+    columns:
+      - {name: dim_channel_id, type: STRING, key: surrogate}
+      - {name: bk_channel_id, type: STRING, key: business}
+      - {name: channel_network, type: STRING}
+      - {name: channel_name, type: STRING}
+      - {name: channel_platform, type: STRING}
+      - {name: channel_partner, type: STRING}
+
+  - name: dim_rate_segment
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per rate segment.
+    columns:
+      - {name: dim_rate_segment_id, type: STRING, key: surrogate}
+      - {name: bk_rate_segment_id, type: STRING, key: business}
+      - {name: rate_segment_name, type: STRING}
+      - {name: rate_category, type: STRING}
+      - {name: rate_code, type: STRING}
+      - {name: rate_type, type: STRING}
+      - {name: rate_partner, type: STRING}
+
+  - name: dim_promotion
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per promotion code (NONE = no promotion).
+    columns:
+      - {name: dim_promotion_id, type: STRING, key: surrogate}
+      - {name: bk_promo_cd, type: STRING, key: business}
+      - {name: promotion_name, type: STRING}
+      - {name: campaign_name, type: STRING}
+      - {name: discount_type, type: STRING}
+      - {name: discount_value, type: "DECIMAL(9,2)"}
+      - {name: min_los_nights, type: INT}
+      - {name: max_los_nights, type: INT}
+      - {name: promo_start_date, type: DATE}
+      - {name: promo_end_date, type: DATE}
+
+  - name: dim_room_type
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per room type.
+    columns:
+      - {name: dim_room_type_id, type: STRING, key: surrogate}
+      - {name: bk_room_type_id, type: STRING, key: business}
+      - {name: room_type_cd, type: STRING}
+      - {name: room_type_name, type: STRING}
+      - {name: room_class, type: STRING}
+      - {name: bed_type, type: STRING}
+      - {name: bed_count, type: INT}
+      - {name: accessible_flag, type: BOOLEAN}
+      - {name: smoking_flag, type: BOOLEAN}
+
+  - name: dim_los
+    schema: mart
+    kind: table
+    source: derived
+    grain: One row per length of stay in nights (0-365) with ten bandings.
+    columns:
+      - {name: dim_los_id, type: STRING, key: surrogate}
+      - {name: bk_los_id, type: STRING, key: business}
+      - {name: los_nights, type: INT}
+      - {name: los_band_1, type: STRING}
+      - {name: los_band_2, type: STRING}
+      - {name: los_band_3, type: STRING}
+      - {name: los_band_4, type: STRING}
+      - {name: los_band_5, type: STRING}
+      - {name: los_band_6, type: STRING}
+      - {name: los_band_7, type: STRING}
+      - {name: los_band_8, type: STRING}
+      - {name: los_band_9, type: STRING}
+      - {name: los_band_10, type: STRING}
+
+  - name: dim_date
+    schema: common
+    kind: table
+    source: derived
+    grain: One row per calendar day, 1980-01-01 through 2050-12-31.
+    columns:
+      - {name: BK_Date_Dim_Id, type: INT, key: business}
+      - {name: Date_Dt, type: DATE}
+      - {name: Day_Of_Week_Nbr, type: INT}
+      - {name: Day_Of_Week_Name, type: STRING}
+      - {name: Day_Of_Month_Nbr, type: INT}
+      - {name: Day_Of_Year_Nbr, type: INT}
+      - {name: Week_Of_Year_Nbr, type: INT}
+      - {name: Week_Start_Dt, type: DATE}
+      - {name: Week_End_Dt, type: DATE}
+      - {name: Month_Nbr, type: INT}
+      - {name: Month_Name, type: STRING}
+      - {name: Month_Start_Dt, type: DATE}
+      - {name: Month_End_Dt, type: DATE}
+      - {name: Qtr_Nbr, type: INT}
+      - {name: Qtr_Name, type: STRING}
+      - {name: Yr_Nbr, type: INT}
+      - {name: Yr_Month_Nbr, type: INT}
+      - {name: Is_Weekend_Flg, type: BOOLEAN}
+      - {name: Is_Holiday_Flg, type: BOOLEAN}
+      - {name: Holiday_Name, type: STRING}
+      - {name: Same_Day_Last_Yr_Dt, type: DATE}
+      - {name: Same_Weekday_Last_Yr_Dt, type: DATE}
+
+  - name: vw_dim_property
+    schema: mart
+    kind: view
+    source: derived
+    grain: One row per current property, combining the five property tables.
+    columns:
+      - {name: dim_property_id, type: STRING}
+      - {name: bk_property_id, type: STRING, key: business}
+      - {name: property_code, type: STRING}
+      - {name: property_name, type: STRING}
+      - {name: brand_cd, type: STRING}
+      - {name: brand_name, type: STRING}
+      - {name: market_name, type: STRING}
+      - {name: submarket_name, type: STRING}
+      - {name: ownership_type, type: STRING}
+      - {name: address_line_1, type: STRING}
+      - {name: city_name, type: STRING}
+      - {name: state_cd, type: STRING}
+      - {name: postal_cd, type: STRING}
+      - {name: country_cd, type: STRING}
+      - {name: latitude, type: DOUBLE}
+      - {name: longitude, type: DOUBLE}
+      - {name: time_zone_name, type: STRING}
+      - {name: room_count, type: INT}
+      - {name: property_status, type: STRING}
+      - {name: open_date, type: DATE}
+      - {name: acquisition_date, type: DATE}
+      - {name: disposition_date, type: DATE}
+      - {name: str_property_id, type: STRING}
+      - {name: str_market_name, type: STRING}
+      - {name: str_submarket_name, type: STRING}
+      - {name: str_chain_scale, type: STRING}
+      - {name: str_class, type: STRING}
+      - {name: str_location_type, type: STRING}
+      - {name: comp_status, type: STRING}
+      - {name: comp_status_reason, type: STRING}
+      - {name: pet_fee_amount, type: "DECIMAL(38,2)"}
+      - {name: franchise_fee_pct, type: "DECIMAL(5,2)"}
+      - {name: management_fee_pct, type: "DECIMAL(5,2)"}
+      - {name: division_name, type: STRING}
+      - {name: region_name, type: STRING}
+      - {name: district_name, type: STRING}
+      - {name: dvp_name, type: STRING}
+      - {name: rvp_name, type: STRING}
+      - {name: rdo_name, type: STRING}
+      - {name: rvp_rdo_name, type: STRING}
+      - {name: dm_name, type: STRING}
+      - {name: gm_name, type: STRING}
+      - {name: segment1, type: STRING}
+      - {name: segment2, type: STRING}
+      - {name: segment3, type: STRING}
+      - {name: tiger_site_flag, type: BOOLEAN}
+      - {name: current_renovation_type, type: STRING}
+      - {name: current_renovation_phase, type: STRING}
+      - {name: current_renovation_status, type: STRING}
+      - {name: current_renovation_start_date, type: DATE}
+      - {name: current_renovation_end_date, type: DATE}
+      - {name: current_renovation_rooms_impacted, type: INT}
+      - {name: prior_renovation_type, type: STRING}
+      - {name: prior_renovation_status, type: STRING}
+      - {name: prior_renovation_start_date, type: DATE}
+      - {name: prior_renovation_end_date, type: DATE}
+      - {name: is_under_renovation_flag, type: BOOLEAN}
+      - {name: acquired_flag, type: BOOLEAN}
+      - {name: franchise_flag, type: BOOLEAN}
+      - {name: open_year, type: INT}
+      - {name: property_age_years, type: INT}
+      - {name: ops_hierarchy_path, type: STRING}
+      - {name: leadership_path, type: STRING}

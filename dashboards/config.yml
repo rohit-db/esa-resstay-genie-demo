@@ -1,0 +1,3 @@
+# Demo-specific dashboard defaults. The Property Comparison page opens on this district (the planted renovation
+# district at the default seed and scale); change or remove it for other data, such as the esa target.
+comparison_district: Texas District 2

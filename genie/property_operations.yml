@@ -1,0 +1,228 @@
+# ESA Property Operations Genie agent. Rendered by tools/render.py into
+# build/genie/property_operations.geniespace.json and deployed by resources/genie_spaces.yml.
+key: property_operations
+metric_views:
+  - semantic.occupancy_metrics
+tables:
+  - mart.vw_dim_property
+  - mart.fact_property_renovation
+  - mart.dim_property_renovation
+match:
+  semantic.occupancy_metrics: [Brand, Comp Status, Division, Region, District, DVP, RVP/RDO, District Manager,
+                               General Manager, Market, Tiger Site, Property, Renovation Status, Under Renovation On Date]
+  mart.vw_dim_property: [property_name, property_code, brand_cd, comp_status, market_name, district_name, region_name,
+                         division_name, dvp_name, rvp_rdo_name, dm_name, gm_name, current_renovation_status]
+  mart.dim_property_renovation: [renovation_type, renovation_phase, renovation_status]
+join_specs:
+  - left: mart.fact_property_renovation
+    right: mart.dim_property_renovation
+    relationship: MANY_TO_ONE
+    sql: "`fact_property_renovation`.`bk_property_renovation_id` = `dim_property_renovation`.`bk_property_renovation_id`"
+  - left: mart.fact_property_renovation
+    right: mart.vw_dim_property
+    relationship: MANY_TO_ONE
+    sql: "`fact_property_renovation`.`bk_property_id` = `vw_dim_property`.`bk_property_id`"
+instructions: |
+  ## PURPOSE
+  - Answer ESA property operations questions for operating leaders (DVP, RVP/RDO, DM, GM): occupancy, out-of-order rooms, RevPAR, renovations, Tiger Sites, and comp status.
+  - Use occupancy_metrics for every KPI; use the renovation tables only for renovation details such as type, phase, rooms impacted, and capex budget.
+
+  ## DISAMBIGUATION
+  - MTD, last week, last 4 weeks, and last quarter end on the Latest Date measure (the last night audit), not today.
+  - "vs last year" means the same calendar window one year earlier.
+  - "Comp rooms" are complimentary rooms (Comp Rooms); "comp hotels" means Comp Status = Comp. Never mix the two.
+  - "Under renovation" for a period means Under Renovation On Date; for the hotel's current state use Renovation Status.
+
+  ## DATA QUALITY NOTES
+  - Out-of-order rooms include both renovation and routine maintenance.
+  - In the renovation tables, keep only rows with is_current = true, and member_flag = true on fact_property_renovation.
+
+  ## Instructions you must follow when providing summaries
+  - In SQL, return rates, shares, and growth as fractions (0.052, not 5.2); show them as percentages only in the written answer.
+  - State the date window used and the latest loaded date.
+  - Show occupancy and out-of-order share as percentages with one decimal, and RevPAR in dollars and cents.
+sample_questions:
+  - Which districts lost the most occupancy vs last year in the last 4 weeks?
+  - How does weekly occupancy for hotels under renovation compare with the rest of their district?
+  - Which Tiger Sites are below 70% occupancy month to date?
+  - What is RevPAR by brand and market for last quarter?
+examples:
+  - question: Which districts lost the most occupancy vs last year over the last 4 weeks?
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      ),
+      cur AS (
+        SELECT `District`, `District Manager`, MEASURE(`Occupancy`) AS occupancy, MEASURE(`Out-of-Order Rooms`) AS ooo_rooms
+        FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT date_sub(d, 27) FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `District`, MEASURE(`Occupancy`) AS occupancy
+        FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT add_months(date_sub(d, 27), -12) FROM latest) AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`District`, cur.`District Manager`, cur.occupancy AS occupancy,
+             prior.occupancy AS occupancy_ly, cur.occupancy - prior.occupancy AS occupancy_change,
+             cur.ooo_rooms
+      FROM cur JOIN prior ON cur.`District` = prior.`District`
+      ORDER BY occupancy_change
+      LIMIT 10
+  - question: Weekly occupancy for hotels under renovation vs the rest of their district over the last 12 weeks
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      ),
+      renovating AS (
+        SELECT DISTINCT district_name FROM {{catalog}}.{{mart}}.vw_dim_property WHERE is_under_renovation_flag
+      )
+      SELECT `District`, `Week`, `Renovation Status`, MEASURE(`Occupancy`) AS occupancy,
+             MEASURE(`Out-of-Order Rooms`) AS ooo_rooms
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `District` IN (SELECT district_name FROM renovating)
+        AND `Date` BETWEEN (SELECT date_sub(d, 83) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY `District`, `Week`, `Renovation Status`
+  - question: Which Tiger Sites are below 70 percent occupancy month to date?
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      )
+      SELECT `Property`, `District`, MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Tiger Site` = 'Tiger Site'
+        AND `Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      HAVING MEASURE(`Occupancy`) < 0.70
+      ORDER BY occupancy
+  - question: RevPAR and occupancy by brand and market for the last full quarter
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      )
+      SELECT `Brand`, `Market`, MEASURE(`RevPAR`) AS revpar, MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'QUARTER'), -3) FROM latest)
+                       AND (SELECT date_sub(trunc(d, 'QUARTER'), 1) FROM latest)
+      GROUP BY ALL
+      ORDER BY revpar DESC
+  - question: Out-of-order room nights and out-of-order share by district for the last 4 weeks
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      )
+      SELECT `District`, MEASURE(`Out-of-Order Rooms`) AS ooo_rooms, MEASURE(`Out-of-Order Share`) AS ooo_share
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT date_sub(d, 27) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY ooo_rooms DESC
+      LIMIT 10
+  - question: Which hotels have a renovation in progress, and what type, rooms impacted, and capex budget?
+    sql: |
+      SELECT p.property_name, p.district_name, r.renovation_type, r.renovation_phase, r.renovation_start_date,
+             r.renovation_end_date, r.rooms_impacted_count, r.capex_budget_amount
+      FROM {{catalog}}.{{mart}}.fact_property_renovation b
+      JOIN {{catalog}}.{{mart}}.dim_property_renovation r
+        ON r.bk_property_renovation_id = b.bk_property_renovation_id AND r.is_current
+      JOIN {{catalog}}.{{mart}}.vw_dim_property p ON p.bk_property_id = b.bk_property_id
+      WHERE b.is_current AND b.member_flag AND r.renovation_status = 'In Progress'
+      ORDER BY r.renovation_start_date, p.property_name
+  - question: Month-to-date occupancy vs last year for comp and non-comp hotels
+    sql: |
+      WITH latest AS (
+        SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      ),
+      cur AS (
+        SELECT `Comp Status`, MEASURE(`Occupancy`) AS occupancy FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+        GROUP BY ALL
+      ),
+      prior AS (
+        SELECT `Comp Status`, MEASURE(`Occupancy`) AS occupancy FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -12) FROM latest) AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`Comp Status`, cur.occupancy AS occupancy, prior.occupancy AS occupancy_ly
+      FROM cur LEFT JOIN prior ON cur.`Comp Status` = prior.`Comp Status`
+  - question: How many hotels does each brand have, and how many of them are Tiger Sites?
+    sql: |
+      SELECT brand_cd AS brand, COUNT(DISTINCT bk_property_id) AS hotels,
+             COUNT(DISTINCT CASE WHEN tiger_site_flag THEN bk_property_id END) AS tiger_sites
+      FROM {{catalog}}.{{mart}}.vw_dim_property
+      GROUP BY brand_cd
+      ORDER BY hotels DESC
+benchmarks:
+  - question: What was occupancy over the last 7 days?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT date_sub(d, 6) FROM latest) AND (SELECT d FROM latest)
+  - question: Occupancy by brand month to date
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT `Brand`, MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY `Brand`
+  - question: What is RevPAR month to date compared with the same period last year?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics),
+      cur AS (
+        SELECT MEASURE(`RevPAR`) AS revpar FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest)
+      ),
+      prior AS (
+        SELECT MEASURE(`RevPAR`) AS revpar FROM {{catalog}}.{{semantic}}.occupancy_metrics
+        WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -12) FROM latest) AND (SELECT add_months(d, -12) FROM latest)
+      )
+      SELECT cur.revpar AS revpar_mtd, prior.revpar AS revpar_ly FROM cur CROSS JOIN prior
+  - question: How many hotels are Tiger Sites?
+    sql: |
+      SELECT COUNT(*) AS tiger_sites FROM {{catalog}}.{{mart}}.vw_dim_property WHERE tiger_site_flag
+  - question: Which region had the highest occupancy last month?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT `Region`, MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                       AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+      GROUP BY ALL
+      ORDER BY occupancy DESC
+      LIMIT 1
+  - question: What is the out-of-order share by brand for the last 4 weeks?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT `Brand`, MEASURE(`Out-of-Order Share`) AS ooo_share
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT date_sub(d, 27) FROM latest) AND (SELECT d FROM latest)
+      GROUP BY ALL
+      ORDER BY `Brand`
+  - question: How many hotels are under renovation right now?
+    sql: |
+      SELECT COUNT(*) AS hotels_under_renovation FROM {{catalog}}.{{mart}}.vw_dim_property WHERE is_under_renovation_flag
+  - question: What is the total capex budget for renovations in progress?
+    sql: |
+      SELECT SUM(r.capex_budget_amount) AS capex_budget
+      FROM {{catalog}}.{{mart}}.dim_property_renovation r
+      WHERE r.is_current AND r.renovation_status = 'In Progress'
+  - question: Paid rooms vs comp rooms last month
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT MEASURE(`Paid Rooms`) AS paid_rooms, MEASURE(`Comp Rooms`) AS comp_rooms
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                       AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+  - question: Which 5 hotels had the lowest occupancy last month?
+    sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Date`) AS d FROM {{catalog}}.{{semantic}}.occupancy_metrics)
+      SELECT `Property`, MEASURE(`Occupancy`) AS occupancy
+      FROM {{catalog}}.{{semantic}}.occupancy_metrics
+      WHERE `Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -1) FROM latest)
+                       AND (SELECT date_sub(trunc(d, 'MM'), 1) FROM latest)
+      GROUP BY ALL
+      ORDER BY occupancy
+      LIMIT 5

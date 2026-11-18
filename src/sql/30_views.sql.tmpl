@@ -1,0 +1,94 @@
+CREATE OR REPLACE VIEW `{{catalog}}`.`{{mart}}`.`vw_dim_property` AS
+WITH p AS (
+  SELECT * FROM `{{catalog}}`.`{{mart}}`.`dim_property` WHERE is_current
+),
+x AS (
+  SELECT * FROM `{{catalog}}`.`{{mart}}`.`dim_property_extended` WHERE is_current
+),
+ops AS (
+  SELECT b.bk_property_id,
+         h.level_1_value AS division_name,
+         h.level_2_value AS region_name,
+         h.level_3_value AS district_name
+  FROM `{{catalog}}`.`{{mart}}`.`fact_property_hierarchy` AS b
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_property_hierarchy` AS h
+    ON h.bk_property_hierarchy_id = b.bk_property_hierarchy_id AND h.is_current
+  WHERE b.is_current AND b.member_flag AND h.hierarchy_name = 'Operations'
+),
+ldr AS (
+  SELECT b.bk_property_id,
+         h.level_1_value AS dvp_name,
+         CASE WHEN h.level_2_name = 'RVP' THEN h.level_2_value END AS rvp_name,
+         CASE WHEN h.level_2_name = 'RDO' THEN h.level_2_value END AS rdo_name,
+         h.level_2_value AS rvp_rdo_name,
+         h.level_3_value AS dm_name,
+         h.level_4_value AS gm_name
+  FROM `{{catalog}}`.`{{mart}}`.`fact_property_hierarchy` AS b
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_property_hierarchy` AS h
+    ON h.bk_property_hierarchy_id = b.bk_property_hierarchy_id AND h.is_current
+  WHERE b.is_current AND b.member_flag AND h.hierarchy_name = 'Leadership'
+),
+seg AS (
+  SELECT b.bk_property_id,
+         max(CASE WHEN s.segment_type = 'Location' THEN s.segment_name END) AS segment1,
+         max(CASE WHEN s.segment_type = 'Service Level' THEN s.segment_name END) AS segment2,
+         max(CASE WHEN s.segment_type = 'Program' THEN s.segment_name END) AS segment3
+  FROM `{{catalog}}`.`{{mart}}`.`fact_property_segment` AS b
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_property_segment` AS s
+    ON s.bk_property_segment_id = b.bk_property_segment_id AND s.is_current
+  WHERE b.is_current AND b.member_flag
+  GROUP BY b.bk_property_id
+),
+reno AS (
+  SELECT b.bk_property_id, r.renovation_type, r.renovation_phase, r.renovation_status,
+         r.renovation_start_date, r.renovation_end_date, r.rooms_impacted_count,
+         row_number() OVER (
+           PARTITION BY b.bk_property_id, r.renovation_status IN ('In Progress', 'Planned')
+           ORDER BY CASE WHEN r.renovation_status = 'In Progress' THEN 0 ELSE 1 END, r.renovation_start_date) AS rn_current,
+         row_number() OVER (
+           PARTITION BY b.bk_property_id, r.renovation_status = 'Complete'
+           ORDER BY r.renovation_end_date DESC) AS rn_prior
+  FROM `{{catalog}}`.`{{mart}}`.`fact_property_renovation` AS b
+  JOIN `{{catalog}}`.`{{mart}}`.`dim_property_renovation` AS r
+    ON r.bk_property_renovation_id = b.bk_property_renovation_id AND r.is_current
+  WHERE b.is_current AND b.member_flag
+),
+cur AS (SELECT * FROM reno WHERE renovation_status IN ('In Progress', 'Planned') AND rn_current = 1),
+pr AS (SELECT * FROM reno WHERE renovation_status = 'Complete' AND rn_prior = 1)
+SELECT
+  p.dim_property_id, p.bk_property_id, p.property_code, p.property_name, p.brand_cd, p.brand_name,
+  p.market_name, p.submarket_name, p.ownership_type, p.address_line_1, p.city_name, p.state_cd,
+  p.postal_cd, p.country_cd, p.latitude, p.longitude, p.time_zone_name, p.room_count, p.property_status,
+  x.open_date, x.acquisition_date, x.disposition_date, x.str_property_id, x.str_market_name,
+  x.str_submarket_name, x.str_chain_scale, x.str_class, x.str_location_type, x.comp_status,
+  x.comp_status_reason, x.pet_fee_amount, x.franchise_fee_pct, x.management_fee_pct,
+  ops.division_name, ops.region_name, ops.district_name,
+  ldr.dvp_name, ldr.rvp_name, ldr.rdo_name, ldr.rvp_rdo_name, ldr.dm_name, ldr.gm_name,
+  seg.segment1, seg.segment2, seg.segment3,
+  coalesce(seg.segment3 = 'Tiger Site', false) AS tiger_site_flag,
+  cur.renovation_type AS current_renovation_type,
+  cur.renovation_phase AS current_renovation_phase,
+  cur.renovation_status AS current_renovation_status,
+  cur.renovation_start_date AS current_renovation_start_date,
+  cur.renovation_end_date AS current_renovation_end_date,
+  cur.rooms_impacted_count AS current_renovation_rooms_impacted,
+  pr.renovation_type AS prior_renovation_type,
+  pr.renovation_status AS prior_renovation_status,
+  pr.renovation_start_date AS prior_renovation_start_date,
+  pr.renovation_end_date AS prior_renovation_end_date,
+  coalesce(cur.renovation_status = 'In Progress', false) AS is_under_renovation_flag,
+  x.acquisition_date IS NOT NULL AS acquired_flag,
+  p.ownership_type = 'Franchised' AS franchise_flag,
+  year(x.open_date) AS open_year,
+  CAST(floor(months_between(current_date(), x.open_date) / 12) AS INT) AS property_age_years,
+  concat_ws(' > ', ops.division_name, ops.region_name, ops.district_name) AS ops_hierarchy_path,
+  concat_ws(' > ', ldr.dvp_name, ldr.rvp_rdo_name, ldr.dm_name, ldr.gm_name) AS leadership_path,
+  p.hash_diff, p.record_source, p.etl_id, p.load_date_time, p.dq_status,
+  p.active_start_date_time, p.active_end_date_time, p.is_current, p.is_deleted
+FROM p
+LEFT JOIN x ON x.bk_property_id = p.bk_property_id
+LEFT JOIN ops ON ops.bk_property_id = p.bk_property_id
+LEFT JOIN ldr ON ldr.bk_property_id = p.bk_property_id
+LEFT JOIN seg ON seg.bk_property_id = p.bk_property_id
+LEFT JOIN cur ON cur.bk_property_id = p.bk_property_id
+LEFT JOIN pr ON pr.bk_property_id = p.bk_property_id;

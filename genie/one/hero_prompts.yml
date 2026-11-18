@@ -1,0 +1,41 @@
+# Genie One hero prompts, replayed by tools/validate.py (section genie_one). Kept out of genie/*.yml, which holds agent specs.
+# Each answer must cite only ESA Pages and dev_gold assets, cite the expected Pages, and mention every value that
+# expect_sql returns. Prompts in the same session continue one conversation.
+prompts:
+  - key: adr_by_brand
+    session: hero
+    question: >-
+      Using the {{catalog}} catalog: what does ADR mean at ESA, and how is it trending month to date vs last year by
+      brand?
+    expect_pages: [resstay--adr, resstay--selected-time-period]
+    expect_sql: SELECT DISTINCT brand_cd FROM {{catalog}}.{{mart}}.vw_dim_property
+  - key: district_decline
+    session: hero
+    question: >-
+      In {{catalog}}, which district has the biggest room revenue decline vs last year this month, and what is
+      driving it?
+    expect_pages: []
+    expect_sql: |
+      WITH latest AS (SELECT MEASURE(`Latest Stay Date`) AS d FROM {{catalog}}.{{semantic}}.resstay_metrics),
+      cur AS (
+        SELECT `District`, MEASURE(`Room Revenue`) AS rr FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT trunc(d, 'MM') FROM latest) AND (SELECT d FROM latest) GROUP BY ALL
+      ),
+      ly AS (
+        SELECT `District`, MEASURE(`Room Revenue`) AS rr FROM {{catalog}}.{{semantic}}.resstay_metrics
+        WHERE `Stay Date` BETWEEN (SELECT add_months(trunc(d, 'MM'), -12) FROM latest)
+                              AND (SELECT add_months(d, -12) FROM latest)
+        GROUP BY ALL
+      )
+      SELECT cur.`District` FROM cur JOIN ly ON cur.`District` = ly.`District`
+      ORDER BY try_divide(cur.rr - ly.rr, ly.rr) LIMIT 1
+  - key: renovation_hotels
+    session: hero
+    question: >-
+      For that district, which hotels are under renovation, and how many room nights did out-of-order rooms cost
+      this month?
+    expect_pages: []
+    expect_sql: |
+      SELECT element_at(split(p.property_name, ' - '), -1)
+      FROM {{catalog}}.{{mart}}.vw_dim_property AS p
+      WHERE p.is_under_renovation_flag

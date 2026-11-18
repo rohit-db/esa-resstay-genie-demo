@@ -1,0 +1,9 @@
+# Demo personas for tools/set_persona.py. Each persona rewrites only the operator's own entitlement row.
+# Scopes resolve at run time from the generated hierarchy: the district with hotels under a full renovation (the
+# planted story), and that district's region and division, so the DM view shows the renovation story.
+personas:
+  corporate: {label: Corporate - all hotels, scope_level: CORPORATE}
+  dvp: {label: DVP - the renovation district's division, scope_level: DIVISION}
+  rvp: {label: RVP/RDO - the renovation district's region, scope_level: REGION}
+  dm: {label: District Manager - the renovation district, scope_level: DISTRICT}
+  none: {label: No entitlement - sees nothing, scope_level: NONE}

@@ -1,0 +1,66 @@
+# Declarative Automation Bundle for the ESA ResStay Genie demo.
+# Names in every rendered SQL file come from these variables (see tools/render.py).
+bundle:
+  name: esa-resstay-genie-demo
+
+include:
+  - resources/*.yml
+
+artifacts:
+  esa_wheel:
+    type: whl
+    path: .
+    build: uv build --wheel
+    dynamic_version: true
+
+sync:
+  include:
+    - build/**
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds the ESA model.
+    default: dev_gold
+  mart_schema:
+    description: Schema with ESA's star schema tables.
+    default: mart
+  common_schema:
+    description: Schema with the shared dim_date table.
+    default: common
+  staging_schema:
+    description: Schema the synthetic generator writes to (demo only).
+    default: staging
+  semantic_schema:
+    description: Schema for metric views.
+    default: semantic
+  security_schema:
+    description: Schema for entitlements and row filters.
+    default: security
+  warehouse_name:
+    description: Name of the bundle's serverless SQL warehouse.
+    default: ESA ResStay Demo
+  run_data:
+    description: '"true" generates and loads synthetic data; the esa target sets "false".'
+    default: "true"
+  scale_properties:
+    description: Number of synthetic hotels.
+    default: "600"
+  seed:
+    description: Global random seed for the synthetic data.
+    default: "20261117"
+  story_anchor_date:
+    description: Date the planted demo stories are anchored to; deploy.py passes the manifest value.
+    default: ""
+  nightly_pause_status:
+    description: PAUSED or UNPAUSED for the 06:00 America/New_York refresh.
+    default: PAUSED
+
+targets:
+  demo:
+    default: true
+    workspace:
+      host: https://fe-sandbox-esa-resstay-demo.cloud.databricks.com
+      workspace_id: 7474655108048127
+  esa:
+    variables:
+      run_data: "false"

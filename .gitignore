@@ -1,0 +1,18 @@
+# Deployment state, validation evidence, and rendered artifacts
+.state/
+build/
+.databricks/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Local tooling (design notes and plans stay local)
+docs/superpowers/
+.superpowers/
+.worktrees/
+.DS_Store
+dist/
+*.egg-info/

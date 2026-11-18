@@ -1,0 +1,58 @@
+-- Hierarchy row-level security. Rendered by tools/render.py and run by the setup job after the loads, the
+-- views, and the materialized view (recreating a table drops its row filter, so this always runs again).
+
+CREATE TABLE IF NOT EXISTS `{{catalog}}`.`{{security}}`.`property_entitlements` (
+  principal STRING NOT NULL COMMENT 'User name (email) or account group name.',
+  principal_type STRING NOT NULL COMMENT 'USER or GROUP.',
+  scope_level STRING NOT NULL COMMENT 'CORPORATE, DIVISION, REGION, DISTRICT, or PROPERTY.',
+  scope_value STRING COMMENT 'Division, region, or district name, or bk_property_id; empty for CORPORATE.',
+  persona_label STRING COMMENT 'Demo persona this row represents, set by tools/set_persona.py.'
+)
+COMMENT 'Which hotels each identity may see. One row per identity; the row filter property_row_filter reads it.';
+
+-- Every setup run leaves the operator (the job owner) at corporate scope, so the data checks see every hotel.
+-- tools/set_persona.py switches personas for the demo afterwards.
+MERGE INTO `{{catalog}}`.`{{security}}`.`property_entitlements` AS e
+USING (SELECT current_user() AS principal) AS s
+ON e.principal_type = 'USER' AND lower(e.principal) = lower(s.principal)
+WHEN MATCHED THEN UPDATE SET scope_level = 'CORPORATE', scope_value = NULL, persona_label = 'corporate'
+WHEN NOT MATCHED THEN INSERT (principal, principal_type, scope_level, scope_value, persona_label)
+  VALUES (s.principal, 'USER', 'CORPORATE', NULL, 'corporate');
+
+-- Built from staging, never from row-filtered tables, so the operator's current persona cannot shrink it.
+CREATE OR REPLACE TABLE `{{catalog}}`.`{{security}}`.`property_scope_lookup`
+COMMENT 'Operations hierarchy per hotel (division, region, district) for property_row_filter; rebuilt by the setup job.'
+AS SELECT b.bk_property_id,
+          h.level_1_value AS division_name,
+          h.level_2_value AS region_name,
+          h.level_3_value AS district_name
+FROM `{{catalog}}`.`{{staging}}`.`fact_property_hierarchy` AS b
+JOIN `{{catalog}}`.`{{staging}}`.`dim_property_hierarchy` AS h
+  ON h.bk_property_hierarchy_id = b.bk_property_hierarchy_id AND h._is_current
+WHERE b._is_current AND b.member_flag AND h.hierarchy_name = 'Operations';
+
+CREATE OR REPLACE FUNCTION `{{catalog}}`.`{{security}}`.`property_row_filter`(property_id STRING)
+RETURNS BOOLEAN
+COMMENT 'True when the current user (or one of their account groups) is entitled to the hotel at CORPORATE, DIVISION, REGION, DISTRICT, or PROPERTY scope.'
+RETURN EXISTS (
+  SELECT 1
+  FROM `{{catalog}}`.`{{security}}`.`property_entitlements` AS e
+  LEFT JOIN `{{catalog}}`.`{{security}}`.`property_scope_lookup` AS s ON s.bk_property_id = property_id
+  WHERE ((e.principal_type = 'USER' AND lower(e.principal) = lower(current_user()))
+         OR (e.principal_type = 'GROUP' AND is_account_group_member(e.principal)))
+    AND (e.scope_level = 'CORPORATE'
+         OR (e.scope_level = 'DIVISION' AND e.scope_value = s.division_name)
+         OR (e.scope_level = 'REGION' AND e.scope_value = s.region_name)
+         OR (e.scope_level = 'DISTRICT' AND e.scope_value = s.district_name)
+         OR (e.scope_level = 'PROPERTY' AND e.scope_value = property_id))
+);
+
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`fact_actual_stay` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`fact_reservation_summary` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER MATERIALIZED VIEW `{{catalog}}`.`{{mart}}`.`fact_property_statistics` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`fact_property_hierarchy` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`fact_property_segment` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`fact_property_renovation` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`dim_property` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`dim_property_extended` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);
+ALTER TABLE `{{catalog}}`.`{{mart}}`.`dim_reservation` SET ROW FILTER `{{catalog}}`.`{{security}}`.`property_row_filter` ON (bk_property_id);

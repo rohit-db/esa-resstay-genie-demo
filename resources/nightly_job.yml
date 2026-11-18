@@ -1,0 +1,75 @@
+resources:
+  jobs:
+    nightly_refresh:
+      name: ESA ResStay Demo - Nightly Refresh
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: America/New_York
+        pause_status: ${var.nightly_pause_status}
+      parameters:
+        - name: as_of_date
+          default: ""
+        - name: story_anchor_date
+          default: ${var.story_anchor_date}
+        - name: run_data
+          default: ${var.run_data}
+      environments:
+        - environment_key: generator
+          spec:
+            environment_version: "6"
+            dependencies:
+              - ../dist/*.whl
+      tasks:
+        - task_key: data_enabled
+          condition_task:
+            op: EQUAL_TO
+            left: "{{job.parameters.run_data}}"
+            right: "true"
+        - task_key: generate
+          depends_on:
+            - task_key: data_enabled
+              outcome: "true"
+          environment_key: generator
+          python_wheel_task:
+            package_name: esa_resstay_demo
+            entry_point: generate
+            parameters:
+              - --catalog
+              - ${var.catalog}
+              - --staging-schema
+              - ${var.staging_schema}
+              - --staging-schema-file
+              - ${workspace.file_path}/build/staging_schema.json
+              - --as-of
+              - "{{job.parameters.as_of_date}}"
+              - --story-anchor
+              - "{{job.parameters.story_anchor_date}}"
+              - --seed
+              - ${var.seed}
+              - --scale
+              - ${var.scale_properties}
+        - task_key: load
+          depends_on:
+            - task_key: generate
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/20_load.sql
+              source: WORKSPACE
+        - task_key: refresh_materialized_views
+          depends_on:
+            - task_key: load
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/32_refresh_materialized_views.sql
+              source: WORKSPACE
+        - task_key: data_checks
+          depends_on:
+            - task_key: refresh_materialized_views
+          sql_task:
+            warehouse_id: ${resources.sql_warehouses.esa_demo_wh.id}
+            file:
+              path: ../build/sql/40_data_checks.sql
+              source: WORKSPACE
